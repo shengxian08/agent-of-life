@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数据库管理 — 家务AI管家</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:#f0f2f5;color:#1a1a2e;padding:24px}
+.topbar{background:#fff;border-radius:14px;padding:16px 24px;margin-bottom:24px;display:flex;align-items:center;gap:20px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.topbar a{text-decoration:none;color:#6366f1;font-weight:600}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}
+.btn{padding:8px 16px;border:none;border-radius:8px;font-size:.85rem;font-weight:600;cursor:pointer;transition:.15s}
+.btn-primary{background:#6366f1;color:#fff}
+.btn-primary:hover{background:#4f46e5}
+.btn-outline{background:#fff;color:#6366f1;border:1.5px solid #6366f1}
+.btn-outline:hover{background:#eef2ff}
+.btn-danger{background:#fff;color:#dc2626;border:1.5px solid #fecaca;font-size:.75rem;padding:4px 10px}
+.btn-danger:hover{background:#fef2f2}
+.btn-success{background:#16a34a;color:#fff}
+.btn-success:hover{background:#15803d}
+h2{font-size:1rem;margin:20px 0 10px;color:#374151}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:24px;font-size:.88rem}
+th{background:#f8fafc;padding:10px 14px;text-align:left;font-weight:600;border-bottom:2px solid #e5e7eb;white-space:nowrap;color:#374151}
+td{padding:8px 14px;border-bottom:1px solid #f0f2f5}
+tr:hover td{background:#fafbff}
+.empty{text-align:center;color:#9ca3af;padding:32px}
+.tag{padding:2px 8px;border-radius:6px;font-size:.75rem;font-weight:600}
+.tag-red{background:#fef2f2;color:#dc2626}
+.tag-yellow{background:#fefce8;color:#ca8a04}
+.tag-green{background:#f0fdf4;color:#16a34a}
+/* 插入面板 */
+.insert-panel{background:#fff;border-radius:12px;padding:20px 24px;margin-bottom:24px;box-shadow:0 1px 3px rgba(0,0,0,.05);display:none}
+.insert-panel.show{display:block}
+.insert-panel h3{margin-bottom:16px;color:#374151}
+.insert-form{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-group label{font-size:.78rem;font-weight:600;color:#6b7280}
+.form-group input,.form-group select{padding:8px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.85rem;width:140px;transition:.15s}
+.form-group input:focus,.form-group select:focus{outline:none;border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.1)}
+.form-group input.wide{width:200px}
+.msg{font-size:.82rem;margin-top:8px;padding:6px 12px;border-radius:6px;display:none}
+.msg.success{display:block;background:#f0fdf4;color:#16a34a}
+.msg.error{display:block;background:#fef2f2;color:#dc2626}
+.action-col{display:flex;gap:6px}
+</style>
+</head>
+<body>
+<div class="topbar">
+    <span>🏠 家务AI管家</span>
+    <span style="color:#9ca3af">|</span>
+    <a href="/app">💬 对话</a>
+    <a href="/dashboard">📊 工作台</a>
+    <strong style="color:#6366f1">📁 数据库</strong>
+</div>
+
+<div class="toolbar">
+    <button class="btn btn-primary" onclick="showInsert('fridge')">+ 添加食材</button>
+    <button class="btn btn-outline" onclick="showInsert('appliance')">+ 添加家电</button>
+    <button class="btn btn-outline" onclick="showInsert('maintenance')">+ 添加维保</button>
+    <button class="btn btn-outline" onclick="load()">🔄 刷新</button>
+</div>
+
+<!-- 冰箱食材插入表单 -->
+<div class="insert-panel" id="panel-fridge">
+    <h3>🥬 添加冰箱食材</h3>
+    <div class="insert-form">
+        <div class="form-group"><label>食材名称 *</label><input id="fi-name" class="wide" placeholder="如：三文鱼"></div>
+        <div class="form-group"><label>分类</label><select id="fi-category">
+            <option>蔬菜</option><option>水果</option><option>肉类</option><option>海鲜</option><option>乳制品</option><option>粮油</option><option>调味品</option><option>饮品</option><option>零食</option><option>其他</option>
+        </select></div>
+        <div class="form-group"><label>数量</label><input id="fi-qty" type="number" value="1" step="0.1" min="0.01" style="width:80px"></div>
+        <div class="form-group"><label>单位</label><select id="fi-unit">
+            <option>个</option><option>斤</option><option>kg</option><option>g</option><option>袋</option><option>瓶</option><option>盒</option><option>包</option><option>把</option><option>块</option><option>L</option><option>ml</option>
+        </select></div>
+        <div class="form-group"><label>保质期(天)</label><input id="fi-expiry" type="number" value="7" min="0" style="width:80px"></div>
+        <div class="form-group"><label>存放位置</label><select id="fi-storage">
+            <option>冰箱冷藏</option><option>冰箱冷冻</option><option>常温</option>
+        </select></div>
+        <div class="form-group"><label>价格(元)</label><input id="fi-price" type="number" value="0" step="0.1" min="0" style="width:100px"></div>
+        <button class="btn btn-primary" onclick="insertFridge()">✅ 添加</button>
+        <button class="btn btn-outline" onclick="hideInsert('fridge')">取消</button>
+    </div>
+    <div class="msg" id="fi-msg"></div>
+</div>
+
+<!-- 家电插入表单 -->
+<div class="insert-panel" id="panel-appliance">
+    <h3>🔌 添加家电</h3>
+    <div class="insert-form">
+        <div class="form-group"><label>家电名称 *</label><input id="ap-name" class="wide" placeholder="如：小米空气净化器"></div>
+        <div class="form-group"><label>类型</label><select id="ap-type">
+            <option>robot_vacuum</option><option>washing_machine</option><option>dishwasher</option><option>air_conditioner</option><option>water_heater</option><option>refrigerator</option><option>oven</option><option>other</option>
+        </select></div>
+        <div class="form-group"><label>品牌</label><input id="ap-brand" placeholder="如：小米"></div>
+        <div class="form-group"><label>型号</label><input id="ap-model" placeholder="如：Pro H"></div>
+        <div class="form-group"><label>保养周期(天)</label><input id="ap-cycle" type="number" value="180" min="1" style="width:80px"></div>
+        <button class="btn btn-success" onclick="insertAppliance()">✅ 添加</button>
+        <button class="btn btn-outline" onclick="hideInsert('appliance')">取消</button>
+    </div>
+    <div class="msg" id="ap-msg"></div>
+</div>
+
+<!-- 维保任务插入表单 -->
+<div class="insert-panel" id="panel-maintenance">
+    <h3>🔧 添加维保任务</h3>
+    <div class="insert-form">
+        <div class="form-group"><label>家电ID *</label><input id="mt-appliance-id" placeholder="如：ap001"></div>
+        <div class="form-group"><label>家电名称 *</label><input id="mt-appliance-name" class="wide" placeholder="如：海尔冰箱"></div>
+        <div class="form-group"><label>任务类型</label><select id="mt-type">
+            <option>cleaning</option><option>inspection</option><option>replacement</option><option>repair</option>
+        </select></div>
+        <div class="form-group"><label>描述</label><input id="mt-desc" class="wide" placeholder="需要做什么"></div>
+        <div class="form-group"><label>优先级</label><select id="mt-priority">
+            <option>low</option><option>medium</option><option>high</option><option>urgent</option>
+        </select></div>
+        <div class="form-group"><label>截止日期</label><input id="mt-due" type="date"></div>
+        <div class="form-group"><label>预估费用</label><input id="mt-cost" type="number" value="0" step="0.1" min="0" style="width:100px"></div>
+        <button class="btn btn-primary" onclick="insertMaintenance()">✅ 添加</button>
+        <button class="btn btn-outline" onclick="hideInsert('maintenance')">取消</button>
+    </div>
+    <div class="msg" id="mt-msg"></div>
+</div>
+
+<div id="content">加载中...</div>
+
+<script>
+const API='/api/v1/db';
+const TABLES=['users','fridge','appliances','shopping','meal_plans','maintenance'];
+const LABELS={users:'👤 用户',fridge:'🥬 冰箱食材',appliances:'🔌 家电',shopping:'🛒 购物记录',meal_plans:'🍳 菜谱计划',maintenance:'🔧 维保任务'};
+
+function showInsert(type){
+    document.querySelectorAll('.insert-panel').forEach(p=>p.classList.remove('show'));
+    document.getElementById('panel-'+type).classList.add('show');
+    document.getElementById(type==='fridge'?'fi-msg':type==='appliance'?'ap-msg':'mt-msg').className='msg';
+}
+function hideInsert(type){
+    document.getElementById('panel-'+type).classList.remove('show');
+}
+function showMsg(type, text, ok){
+    const id = type==='fridge'?'fi-msg':type==='appliance'?'ap-msg':'mt-msg';
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = 'msg '+(ok?'success':'error');
+    if(ok) setTimeout(()=>{el.className='msg'; load();}, 2000);
+}
+
+async function insertFridge(){
+    const data={
+        user_id:'user_001',
+        name:document.getElementById('fi-name').value.trim(),
+        category:document.getElementById('fi-category').value,
+        quantity:parseFloat(document.getElementById('fi-qty').value)||1,
+        unit:document.getElementById('fi-unit').value,
+        expiry_days:parseInt(document.getElementById('fi-expiry').value)||7,
+        storage_location:document.getElementById('fi-storage').value,
+        price:parseFloat(document.getElementById('fi-price').value)||0,
+    };
+    if(!data.name){showMsg('fridge','请输入食材名称',false);return;}
+    try{
+        const r=await fetch(API+'/fridge/insert',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+        const j=await r.json();
+        showMsg('fridge',j.status==='inserted'?'已添加: '+j.name:j.status==='updated'?'已累加: '+j.name+' ('+j.new_quantity+')':'失败',!!j.status);
+    }catch(e){showMsg('fridge','网络错误: '+e.message,false);}
+}
+
+async function insertAppliance(){
+    const data={
+        user_id:'user_001',
+        name:document.getElementById('ap-name').value.trim(),
+        appliance_type:document.getElementById('ap-type').value,
+        brand:document.getElementById('ap-brand').value.trim(),
+        model:document.getElementById('ap-model').value.trim(),
+        maintenance_cycle_days:parseInt(document.getElementById('ap-cycle').value)||180,
+    };
+    if(!data.name){showMsg('appliance','请输入家电名称',false);return;}
+    try{
+        const r=await fetch(API+'/appliances/insert',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+        const j=await r.json();
+        showMsg('appliance',j.status==='inserted'?'已添加: '+j.name:'失败',!!j.status);
+    }catch(e){showMsg('appliance','网络错误: '+e.message,false);}
+}
+
+async function insertMaintenance(){
+    const data={
+        user_id:'user_001',
+        appliance_id:document.getElementById('mt-appliance-id').value.trim(),
+        appliance_name:document.getElementById('mt-appliance-name').value.trim(),
+        task_type:document.getElementById('mt-type').value,
+        description:document.getElementById('mt-desc').value.trim(),
+        priority:document.getElementById('mt-priority').value,
+        due_date:document.getElementById('mt-due').value||null,
+        estimated_cost:parseFloat(document.getElementById('mt-cost').value)||0,
+    };
+    if(!data.appliance_id||!data.appliance_name){showMsg('maintenance','请填写家电ID和名称',false);return;}
+    try{
+        const r=await fetch(API+'/maintenance/insert',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+        const j=await r.json();
+        showMsg('maintenance',j.status==='inserted'?'已添加任务: '+j.task_id:'失败',!!j.status);
+    }catch(e){showMsg('maintenance','网络错误: '+e.message,false);}
+}
+
+async function deleteFridge(itemId){
+    if(!confirm('确定删除这条食材吗？'))return;
+    try{
+        const r=await fetch(API+'/fridge/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item_id:itemId,user_id:'user_001'})});
+        const j=await r.json();
+        if(j.status==='deleted'){alert('已删除: '+j.name);load();}
+        else{alert('删除失败');}
+    }catch(e){alert('网络错误: '+e.message);}
+}
+
+async function load(){
+    const div=document.getElementById('content');
+    div.innerHTML='';
+    for(const t of TABLES){
+        const h2=document.createElement('h2');
+        h2.textContent=LABELS[t];
+        div.appendChild(h2);
+        try{
+            const r=await fetch(API+'/'+t+'?limit=50');
+            const d=await r.json();
+            if(!d.rows||d.rows.length===0){
+                const p=document.createElement('p');p.className='empty';p.textContent='暂无数据';div.appendChild(p);continue;
+            }
+            const tbl=document.createElement('table');
+            const thead=document.createElement('thead');
+            const tr=document.createElement('tr');
+            // Headers
+            d.columns.forEach(c=>{const th=document.createElement('th');th.textContent=c;tr.appendChild(th)});
+            // Action column for fridge
+            if(t==='fridge'){const th=document.createElement('th');th.textContent='操作';th.style.width='70px';tr.appendChild(th);}
+            thead.appendChild(tr);tbl.appendChild(thead);
+            const tbody=document.createElement('tbody');
+            d.rows.forEach(row=>{
+                const r=document.createElement('tr');
+                d.columns.forEach(c=>{
+                    const td=document.createElement('td');
+                    let v=row[c];
+                    if(v===null||v===undefined)v='-';
+                    else if(typeof v==='string'&&v.length>50)v=v.substring(0,47)+'...';
+                    else if(typeof v==='number')v=Number.isInteger(v)?v:v.toFixed(1);
+                    td.textContent=String(v);
+                    if(c==='expiry_date'&&typeof row[c]==='string'){
+                        const d=new Date(row[c]);const today=new Date();
+                        const days=(d-today)/86400000;
+                        if(days<0){td.innerHTML='<span class="tag tag-red">'+row[c]+' expired</span>'}
+                        else if(days<=3){td.innerHTML='<span class="tag tag-yellow">'+row[c]+' soon</span>'}
+                    }
+                    r.appendChild(td);
+                });
+                // Delete button for fridge
+                if(t==='fridge'){
+                    const td=document.createElement('td');
+                    const btn=document.createElement('button');
+                    btn.className='btn btn-danger';btn.textContent='删除';
+                    btn.onclick=()=>deleteFridge(row.item_id);
+                    td.appendChild(btn);r.appendChild(td);
+                }
+                tbody.appendChild(r);
+            });
+            tbl.appendChild(tbody);div.appendChild(tbl);
+        }catch(e){const p=document.createElement('p');p.className='empty';p.textContent='加载失败: '+e.message;div.appendChild(p);}
+    }
+}
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>家务AI管家 v5.0 — 三栏多智能体中控台</title>
+<style>
+/* ====== Design Tokens & Themes ====== */
+:root{--grid:8px;--space-xs:4px;--space-sm:8px;--space-md:16px;--space-lg:24px;--space-xl:32px;--primary:#5B6ABF;--primary-light:#EBEDF7;--primary-dark:#454FA3;--secondary:#8795A8;--accent:#4A9E8E;--success:#52A879;--success-light:#EDF6F1;--warning:#D4A24E;--warning-light:#FBF5EB;--danger:#C45C5C;--danger-light:#FBEEEE;--info:#5B8FBF;--info-light:#ECF2F8;--shopping:#D4954A;--shopping-light:#FBF3E9;--meal:#52A879;--meal-light:#EDF6F1;--appliance:#5B7FBF;--appliance-light:#ECF2F8;--maintenance:#C47A5C;--maintenance-light:#FBF0EB;--security:#7B6BBF;--security-light:#F1EEF8;--household:#4A9E8E;--household-light:#EAF5F2;--bg:#F2F4F7;--surface:#FFFFFF;--surface-alt:#F8F9FB;--border:#E2E5EB;--border-light:#EEF0F4;--text-primary:#1E2332;--text-secondary:#5A6380;--text-tertiary:#8F97B0;--radius-sm:6px;--radius:8px;--radius-lg:12px;--shadow-sm:0 1px 3px rgba(0,0,0,.06);--shadow:0 2px 8px rgba(0,0,0,.08);--shadow-lg:0 8px 24px rgba(0,0,0,.10);--topbar-h:52px;--alert-h:38px;--kbbar-h:36px;--sidebar-w:220px;--auxbar-w:280px;--transition:.2s ease;--font-xs:11px;--font-sm:12px;--font-base:14px;--font-lg:16px;--font-xl:18px}
+[data-theme=dark]{--bg:#1A1D28;--surface:#232738;--surface-alt:#2A2E3F;--border:#353A4D;--border-light:#2E3243;--text-primary:#E8EAEF;--text-secondary:#A0A7BE;--text-tertiary:#6E7590;--shadow-sm:0 1px 3px rgba(0,0,0,.3);--shadow:0 2px 8px rgba(0,0,0,.4);--shadow-lg:0 8px 24px rgba(0,0,0,.5);--primary-light:#2D3150;--success-light:#1F3A2E;--warning-light:#3A3020;--danger-light:#3A2022;--info-light:#1F2F3F;--shopping-light:#3A2A1F;--meal-light:#1F3A2E;--appliance-light:#1F2A3F;--maintenance-light:#3A2520;--security-light:#282040;--household-light:#1F332F}
+[data-theme=cozy]{--bg:#FDF8F0;--surface:#FFFCF7;--surface-alt:#FBF4E8;--border:#E8DCC8;--border-light:#F0E8D5;--text-primary:#3D3226;--text-secondary:#7A6E5E;--text-tertiary:#A89985;--primary:#8B6F4E;--primary-light:#F0E6D8;--primary-dark:#6B5340;--accent:#6B8B6F;--success:#6B8B6F;--warning:#C49A4E;--danger:#B85C5C}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:14px;-webkit-font-smoothing:antialiased}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text-primary);line-height:1.5;overflow:hidden;height:100vh;width:100vw;transition:background var(--transition),color var(--transition)}
+button{cursor:pointer;border:none;font-family:inherit;font-size:inherit}
+input{font-family:inherit;font-size:inherit;border:none;outline:none}a{text-decoration:none;color:inherit}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}::-webkit-scrollbar-thumb:hover{background:var(--text-tertiary)}
+#app{display:flex;flex-direction:column;height:100vh}
+
+/* ====== TOPBAR ====== */
+.topbar{height:var(--topbar-h);min-height:var(--topbar-h);display:flex;align-items:center;gap:var(--space-md);padding:0 var(--space-lg);background:var(--surface);border-bottom:1px solid var(--border);z-index:100;transition:background var(--transition),border-color var(--transition)}
+.topbar .logo{font-weight:700;font-size:var(--font-lg);white-space:nowrap;display:flex;align-items:center;gap:var(--space-xs)}
+.version-tag{font-size:10px;background:var(--primary-light);color:var(--primary-dark);padding:1px 6px;border-radius:10px;font-weight:600}
+.nav-links{display:flex;gap:2px;flex:1;overflow-x:auto}
+.nav-link{padding:6px 14px;border-radius:var(--radius);font-size:var(--font-sm);font-weight:500;color:var(--text-secondary);transition:all var(--transition);white-space:nowrap}
+.nav-link:hover{background:var(--surface-alt);color:var(--text-primary)}.nav-link.active{background:var(--primary-light);color:var(--primary-dark);font-weight:600}
+.nav-right{display:flex;align-items:center;gap:var(--space-sm)}
+.member-switch{display:flex;align-items:center;gap:var(--space-xs);padding:4px 10px;border-radius:var(--radius);cursor:pointer;position:relative;font-size:var(--font-sm);background:var(--surface-alt);font-weight:500}
+.member-switch:hover{background:var(--border-light)}.member-avatar{width:26px;height:26px;border-radius:50%;background:var(--primary-light);display:flex;align-items:center;justify-content:center;font-size:14px}
+.member-menu{position:absolute;top:100%;right:0;margin-top:6px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);min-width:160px;z-index:200;overflow:hidden;display:none}
+.member-menu .member-option{padding:10px 14px;cursor:pointer;font-size:var(--font-sm);display:flex;align-items:center;gap:var(--space-sm)}
+.member-menu .member-option:hover{background:var(--surface-alt)}.member-menu .member-option .role-tag{font-size:10px;padding:1px 6px;border-radius:8px;background:var(--primary-light);color:var(--primary-dark)}
+.compute-badge{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:var(--radius);font-size:var(--font-xs);font-weight:500;background:var(--success-light);color:var(--success)}
+.compute-badge .dot{width:7px;height:7px;border-radius:50%;background:var(--success);animation:pulse-dot 2s infinite}
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.4}}
+.topbar-btn{padding:6px 12px;border-radius:var(--radius);font-size:var(--font-xs);font-weight:500;background:var(--surface-alt);color:var(--text-secondary);transition:all var(--transition)}
+.topbar-btn:hover{background:var(--border-light);color:var(--text-primary)}.topbar-btn.primary{background:var(--primary);color:#fff}.topbar-btn.primary:hover{background:var(--primary-dark)}
+.privacy-toggle{display:flex;align-items:center;gap:4px;padding:6px 10px;border-radius:var(--radius);font-size:var(--font-xs);font-weight:500;background:var(--info-light);color:var(--info);border:2px solid transparent;transition:all var(--transition)}
+.privacy-toggle.active{border-color:var(--info);box-shadow:0 0 0 2px var(--info-light)}
+.privacy-toggle.offline{background:var(--warning-light);color:var(--warning);border-color:var(--warning);box-shadow:0 0 0 2px var(--warning-light)}
+.theme-switch{width:32px;height:32px;border-radius:var(--radius);display:flex;align-items:center;justify-content:center;background:var(--surface-alt);font-size:16px;transition:all var(--transition)}.theme-switch:hover{background:var(--border-light)}
+
+/* ====== ALERT BAR ====== */
+.alert-bar{height:var(--alert-h);min-height:var(--alert-h);display:flex;align-items:center;gap:var(--space-sm);padding:0 var(--space-lg);font-size:var(--font-sm);font-weight:500;background:var(--surface);border-bottom:1px solid var(--border-light);transition:all .3s ease;overflow:hidden}
+.alert-bar.emergency{background:#FDE8E8;color:#9B2C2C;border-color:#F5C6C6}
+.alert-bar.warning{background:#FEF3C7;color:#92400E;border-color:#FCD34D}
+.alert-bar.info{background:var(--info-light);color:var(--info)}.alert-bar.hidden{height:0;min-height:0;padding:0;border:none;opacity:0}
+[data-theme=dark] .alert-bar.emergency{background:#3F1F1F;color:#FCA5A5;border-color:#5C2A2A}
+[data-theme=dark] .alert-bar.warning{background:#3F3518;color:#FCD34D;border-color:#5C4A1A}
+.alert-content{flex:1;display:flex;align-items:center;gap:var(--space-sm)}
+.alert-level-tag{padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700}
+.alert-bar.emergency .alert-level-tag{background:#DC2626;color:#fff}
+.alert-bar.warning .alert-level-tag{background:#D97706;color:#fff}
+.alert-bar.info .alert-level-tag{background:var(--info);color:#fff}
+.alert-actions{display:flex;gap:var(--space-sm);align-items:center}
+.alert-handle-btn{padding:4px 12px;border-radius:var(--radius-sm);font-size:var(--font-xs);font-weight:600;background:#fff;color:var(--text-primary);border:1px solid var(--border);transition:all var(--transition)}
+.alert-handle-btn:hover{background:var(--surface-alt)}
+.alert-dismiss{background:none;font-size:16px;color:var(--text-tertiary);padding:2px 6px;cursor:pointer}.alert-dismiss:hover{color:var(--text-primary)}
+.alert-nav{display:flex;gap:2px}.alert-nav-btn{background:none;font-size:14px;color:var(--text-tertiary);padding:2px 4px;border-radius:3px;cursor:pointer}.alert-nav-btn:hover{color:var(--text-primary)}
+.alert-count{font-size:var(--font-xs);color:var(--text-tertiary)}
+
+/* ====== MAIN LAYOUT ====== */
+.main-layout{display:flex;flex:1;overflow:hidden}
+
+/* ====== LEFT SIDEBAR ====== */
+.sidebar{width:var(--sidebar-w);min-width:var(--sidebar-w);background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;transition:all var(--transition);position:relative}
+.sidebar-header{padding:var(--space-md);display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border-light);font-weight:600;font-size:var(--font-sm);color:var(--text-secondary)}
+.sidebar-header-actions{display:flex;gap:var(--space-xs)}
+.sidebar-header-btn{padding:3px 8px;border-radius:var(--radius-sm);font-size:var(--font-xs);background:var(--surface-alt);color:var(--text-secondary);transition:all var(--transition)}
+.sidebar-header-btn:hover{background:var(--primary-light);color:var(--primary-dark)}.sidebar-header-btn.batch-stop{color:var(--danger)}.sidebar-header-btn.batch-stop:hover{background:var(--danger-light)}
+.agent-list{flex:1;padding:var(--space-sm);display:flex;flex-direction:column;gap:2px}
+.agent-card{display:flex;align-items:center;gap:var(--space-sm);padding:10px var(--space-sm);border-radius:var(--radius);cursor:pointer;transition:all var(--transition);position:relative;user-select:none}
+.agent-card:hover{background:var(--surface-alt)}.agent-card.active{background:var(--primary-light)}
+.agent-card.active::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;border-radius:0 2px 2px 0;background:var(--primary)}
+.agent-card.drag-over{background:var(--border-light);outline:2px dashed var(--primary);outline-offset:-2px}.agent-card.dragging{opacity:.5}
+.agent-icon-wrap{position:relative;flex-shrink:0}
+.agent-icon-wrap .agent-icon{width:36px;height:36px;border-radius:var(--radius);display:flex;align-items:center;justify-content:center;font-size:18px;background:var(--surface-alt)}
+.agent-card.active .agent-icon{background:#fff}
+.agent-status-dot{position:absolute;bottom:-1px;right:-1px;width:12px;height:12px;border-radius:50%;border:2px solid var(--surface);z-index:2}
+.agent-status-dot.running{background:var(--success)}.agent-status-dot.stopped{background:#B0B8C8;border-color:var(--surface)}
+.agent-pending-count{position:absolute;bottom:-2px;right:-4px;min-width:16px;height:16px;border-radius:8px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid var(--surface);padding:0 4px;z-index:2}
+.agent-info{flex:1;min-width:0}.agent-name{font-size:var(--font-sm);font-weight:600;color:var(--text-primary)}
+.agent-desc{font-size:var(--font-xs);color:var(--text-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-context-menu{position:fixed;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);z-index:500;min-width:150px;overflow:hidden}
+.agent-context-menu .ctx-item{padding:8px 14px;font-size:var(--font-sm);cursor:pointer;display:flex;align-items:center;gap:var(--space-sm)}
+.agent-context-menu .ctx-item:hover{background:var(--surface-alt)}.agent-context-menu .ctx-divider{height:1px;background:var(--border-light);margin:4px 0}
+.agent-tooltip{position:fixed;background:var(--text-primary);color:#fff;font-size:var(--font-xs);padding:8px 12px;border-radius:var(--radius);z-index:600;pointer-events:none;max-width:220px;box-shadow:var(--shadow-lg);line-height:1.5}
+
+/* ====== CENTER PANEL ====== */
+.center-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;background:var(--bg);transition:background var(--transition)}
+.scene-history{padding:var(--space-md);border-bottom:1px solid var(--border-light);max-height:40%;overflow-y:auto}
+.scene-history-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-sm)}
+.scene-history-title{font-size:var(--font-sm);font-weight:600;color:var(--text-secondary);display:flex;align-items:center;gap:var(--space-xs)}
+.scene-history-actions{display:flex;gap:var(--space-xs)}
+.scene-history-btn{font-size:var(--font-xs);padding:3px 8px;border-radius:var(--radius-sm);background:var(--surface-alt);color:var(--text-secondary);transition:all var(--transition)}
+.scene-history-btn:hover{background:var(--border-light);color:var(--text-primary)}
+.scene-history-cards{display:flex;gap:var(--space-sm);flex-wrap:wrap}
+.scene-card{background:var(--surface);border:1px solid var(--border-light);border-radius:var(--radius);padding:var(--space-sm) var(--space-md);font-size:var(--font-sm);min-width:200px;flex:1;transition:all var(--transition);position:relative;border-left:4px solid transparent}
+.scene-card:hover{box-shadow:var(--shadow)}.scene-card.morning{border-left-color:#F59E0B}.scene-card.security{border-left-color:var(--security)}.scene-card.cleaning{border-left-color:var(--accent)}
+.scene-card .scene-card-time{font-size:var(--font-xs);color:var(--text-tertiary);display:flex;align-items:center;gap:var(--space-xs)}
+.scene-card .scene-card-trigger{font-size:10px;padding:1px 6px;border-radius:6px}.scene-card .scene-card-trigger.auto{background:var(--info-light);color:var(--info)}.scene-card .scene-card-trigger.manual{background:var(--warning-light);color:var(--warning)}
+.scene-card .scene-card-title{font-weight:600;margin-top:4px}.scene-card .scene-card-desc{font-size:var(--font-xs);color:var(--text-secondary);margin-top:2px}
+.scene-card-actions{display:flex;gap:var(--space-xs);margin-top:var(--space-sm)}
+.scene-card-btn{font-size:var(--font-xs);padding:3px 8px;border-radius:var(--radius-sm);background:var(--surface-alt);color:var(--text-secondary);transition:all var(--transition)}
+.scene-card-btn:hover{background:var(--primary-light);color:var(--primary-dark)}.scene-card-btn.danger:hover{background:var(--danger-light);color:var(--danger)}
+.data-cards-area{display:flex;gap:var(--space-md);padding:var(--space-md);flex:1;overflow:hidden}
+.data-card{flex:1;background:var(--surface);border:1px solid var(--border-light);border-radius:var(--radius-lg);display:flex;flex-direction:column;overflow:hidden;transition:all var(--transition);min-width:0}
+.data-card:hover{box-shadow:var(--shadow)}.data-card-header{padding:var(--space-sm) var(--space-md);border-bottom:1px solid var(--border-light);display:flex;align-items:center;justify-content:space-between;font-size:var(--font-sm);font-weight:600;cursor:move}
+.data-card-header-actions{display:flex;gap:var(--space-xs)}.data-card-header-btn{width:24px;height:24px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;background:transparent;color:var(--text-tertiary);font-size:12px;transition:all var(--transition);cursor:pointer}
+.data-card-header-btn:hover{background:var(--surface-alt);color:var(--text-primary)}.data-card-body{flex:1;overflow-y:auto;padding:var(--space-sm) var(--space-md)}
+.data-card.minimized .data-card-body{display:none}.data-card.minimized{flex:0 0 auto}
+.fridge-item{display:flex;align-items:center;gap:var(--space-sm);padding:8px 0;border-bottom:1px solid var(--border-light);font-size:var(--font-sm)}
+.fridge-item:last-child{border-bottom:none}.fridge-expiry{min-width:52px;padding:2px 6px;border-radius:var(--radius-sm);font-size:var(--font-xs);font-weight:600;text-align:center}
+.fridge-expiry.expired{background:#FEE2E2;color:#DC2626}.fridge-expiry.soon{background:#FEF3C7;color:#D97706}.fridge-expiry.fresh{background:#D1FAE5;color:#059669}
+[data-theme=dark] .fridge-expiry.expired{background:#3F1F1F;color:#FCA5A5}[data-theme=dark] .fridge-expiry.soon{background:#3F3518;color:#FCD34D}[data-theme=dark] .fridge-expiry.fresh{background:#1F3A2E;color:#6EE7B7}
+.fridge-name{flex:1}.fridge-qty{color:var(--text-tertiary);font-size:var(--font-xs)}
+.fridge-expand-btn{display:block;width:100%;text-align:center;padding:8px;font-size:var(--font-xs);color:var(--primary);background:var(--primary-light);border-radius:var(--radius-sm);margin-top:var(--space-sm);font-weight:500;transition:all var(--transition);cursor:pointer;border:none}
+.fridge-expand-btn:hover{background:var(--border-light)}.price-item{display:flex;align-items:center;gap:var(--space-sm);padding:8px 0;border-bottom:1px solid var(--border-light);font-size:var(--font-sm)}
+.price-item:last-child{border-bottom:none}.price-save{font-size:var(--font-xs);color:var(--success);font-weight:600}
+.chat-input-area{padding:var(--space-sm) var(--space-md);border-top:1px solid var(--border);background:var(--surface)}
+.input-toolbar{display:flex;gap:var(--space-xs);margin-bottom:var(--space-sm)}
+.input-tool-btn{width:32px;height:32px;border-radius:var(--radius);display:flex;align-items:center;justify-content:center;background:var(--surface-alt);color:var(--text-secondary);font-size:16px;transition:all var(--transition);position:relative}
+.input-tool-btn:hover{background:var(--primary-light);color:var(--primary-dark)}
+.input-tool-btn.recording{background:var(--danger-light);color:var(--danger);animation:pulse-rec 1.5s infinite}
+@keyframes pulse-rec{0%,100%{box-shadow:0 0 0 0 rgba(196,92,92,.4)}50%{box-shadow:0 0 0 8px rgba(196,92,92,0)}}
+.quick-cmds{display:flex;gap:var(--space-xs);flex-wrap:wrap;margin-bottom:var(--space-sm)}
+.quick-cmd-chip{padding:3px 10px;border-radius:12px;font-size:var(--font-xs);background:var(--surface-alt);color:var(--text-secondary);cursor:pointer;transition:all var(--transition);white-space:nowrap}
+.quick-cmd-chip:hover{background:var(--primary-light);color:var(--primary-dark)}
+.input-row{display:flex;gap:var(--space-sm);align-items:center}
+.input-row input{flex:1;padding:10px 14px;border-radius:var(--radius);background:var(--surface-alt);color:var(--text-primary);transition:all var(--transition);border:1px solid transparent}
+.input-row input:focus{border-color:var(--primary);background:var(--surface)}
+.clear-ctx-btn{padding:6px 10px;border-radius:var(--radius);font-size:var(--font-xs);background:var(--surface-alt);color:var(--text-tertiary);transition:all var(--transition);cursor:pointer;border:none}
+.clear-ctx-btn:hover{background:var(--danger-light);color:var(--danger)}
+.send-btn{width:40px;height:40px;border-radius:var(--radius);display:flex;align-items:center;justify-content:center;background:var(--primary);color:#fff;font-size:18px;font-weight:700;transition:all var(--transition)}
+.send-btn:hover{background:var(--primary-dark);transform:scale(1.05)}.send-btn:active{transform:scale(.95)}
+
+/* ====== RIGHT PANEL ====== */
+.aux-panel{width:var(--auxbar-w);min-width:var(--auxbar-w);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;transition:all var(--transition)}
+.aux-panel.collapsed{width:0;min-width:0;border:none;overflow:hidden;padding:0}
+.aux-toggle{position:fixed;right:calc(var(--auxbar-w) - 12px);top:50%;transform:translateY(-50%);width:24px;height:48px;border-radius:12px 0 0 12px;background:var(--surface);border:1px solid var(--border);border-right:none;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:50;font-size:12px;color:var(--text-tertiary);transition:all var(--transition)}
+.aux-toggle:hover{color:var(--text-primary)}.aux-toggle.collapsed{right:-12px;border-radius:0 12px 12px 0;border-left:none;border-right:1px solid var(--border)}
+.aux-section{padding:var(--space-sm) var(--space-md);border-bottom:1px solid var(--border-light)}
+.aux-section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-sm)}
+.aux-section-title{font-size:var(--font-sm);font-weight:600;color:var(--text-secondary);display:flex;align-items:center;gap:var(--space-xs)}
+.aux-section-collapse{width:22px;height:22px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;background:transparent;color:var(--text-tertiary);font-size:12px;transition:all var(--transition);cursor:pointer;border:none}
+.aux-section-collapse:hover{background:var(--surface-alt)}.aux-section.collapsed .aux-section-content{display:none}
+.task-item{display:flex;align-items:center;gap:var(--space-sm);padding:8px;border-radius:var(--radius);margin-bottom:4px;font-size:var(--font-xs);background:var(--surface-alt);transition:all var(--transition)}
+.task-item.running{background:var(--info-light)}.task-item.waiting{opacity:.6}
+.task-agent-badge{padding:2px 6px;border-radius:var(--radius-sm);font-weight:600;font-size:10px;white-space:nowrap}
+.task-progress-bar{flex:1;height:4px;background:var(--border-light);border-radius:2px;overflow:hidden}
+.task-progress-fill{height:100%;border-radius:2px;background:var(--info);transition:width .5s ease}
+.task-progress-fill.running{animation:progress-pulse 1.5s ease-in-out infinite}
+@keyframes progress-pulse{0%,100%{opacity:1}50%{opacity:.6}}
+.task-time{font-size:10px;color:var(--text-tertiary);white-space:nowrap}
+.task-cancel-btn{padding:3px 8px;border-radius:var(--radius-sm);font-size:10px;background:transparent;color:var(--danger);transition:all var(--transition);cursor:pointer;border:1px solid transparent;font-weight:600}
+.task-cancel-btn:hover{background:var(--danger-light);border-color:var(--danger)}
+.scene-btn-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-xs)}
+.scene-btn{padding:8px;border-radius:var(--radius);font-size:var(--font-xs);font-weight:500;background:var(--surface-alt);color:var(--text-secondary);text-align:center;transition:all var(--transition);display:flex;flex-direction:column;align-items:center;gap:2px}
+.scene-btn:hover{background:var(--border-light);color:var(--text-primary)}.scene-btn.running{background:var(--success-light);color:var(--success)}
+.scene-btn .scene-btn-icon{font-size:20px}.scene-btn .scene-hint{font-size:9px;color:var(--text-tertiary)}
+.brief-list{display:flex;flex-direction:column;gap:var(--space-xs)}
+.brief-item{padding:8px 10px;border-radius:var(--radius-sm);font-size:var(--font-xs);display:flex;align-items:flex-start;gap:var(--space-sm);cursor:pointer;transition:all var(--transition);border-left:3px solid transparent}
+.brief-item:hover{background:var(--surface-alt)}.brief-item.emergency{border-left-color:var(--danger);background:var(--danger-light)}.brief-item.warning{border-left-color:var(--warning);background:var(--warning-light)}.brief-item.info{border-left-color:var(--info);background:var(--info-light)}
+.brief-item .brief-icon{flex-shrink:0;margin-top:1px}
+.brief-go{margin-left:auto;font-size:10px;color:#fff;font-weight:600;white-space:nowrap;padding:3px 8px;border-radius:var(--radius-sm);transition:all var(--transition);background:var(--primary);cursor:pointer;border:none}.brief-go:hover{background:var(--primary-dark);transform:scale(1.05)}
+/* ====== KB BAR & PANEL ====== */
+.kb-bar{height:var(--kbbar-h);display:flex;align-items:center;gap:var(--space-sm);padding:0 var(--space-lg);background:var(--surface);border-top:1px solid var(--border);font-size:var(--font-xs);color:var(--text-tertiary);cursor:pointer;transition:all var(--transition)}
+.kb-bar:hover{background:var(--surface-alt);color:var(--text-secondary)}.kb-bar .kb-shortcut{margin-left:auto;font-size:10px;padding:2px 6px;border-radius:3px;background:var(--surface-alt)}
+.kb-panel{position:fixed;bottom:var(--kbbar-h);left:0;right:0;background:var(--surface);border-top:1px solid var(--border);box-shadow:var(--shadow-lg);z-index:250;display:flex;flex-direction:column;transition:all .3s ease;max-height:40vh}
+.kb-panel.hidden{max-height:0;overflow:hidden;border:none}
+.kb-panel-header{padding:var(--space-sm) var(--space-lg);border-bottom:1px solid var(--border-light);display:flex;align-items:center;justify-content:space-between;font-weight:600;font-size:var(--font-sm)}
+.kb-panel-body{flex:1;overflow-y:auto;padding:var(--space-md) var(--space-lg)}
+.kb-panel-input-row{display:flex;gap:var(--space-sm);padding:var(--space-sm) var(--space-lg);border-top:1px solid var(--border-light)}
+.kb-panel-input-row input{flex:1;padding:8px 12px;border-radius:var(--radius);background:var(--surface-alt);border:1px solid var(--border)}
+.kb-panel-search-btn{padding:8px 16px;border-radius:var(--radius);background:var(--primary);color:#fff;font-weight:500;cursor:pointer;border:none}
+.kb-search-result{padding:var(--space-sm);border-radius:var(--radius);margin-bottom:var(--space-sm);background:var(--surface-alt);font-size:var(--font-sm)}
+.kb-search-result .kb-result-title{font-weight:600}.kb-search-result .kb-result-snippet{font-size:var(--font-xs);color:var(--text-secondary);margin-top:2px}.kb-search-result .kb-result-meta{font-size:10px;color:var(--text-tertiary);margin-top:4px}
+.export-btn{padding:3px 8px;border-radius:var(--radius-sm);font-size:10px;background:var(--surface-alt);color:var(--text-tertiary);cursor:pointer;border:none;transition:all var(--transition)}
+.export-btn:hover{background:var(--primary-light);color:var(--primary-dark)}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:300;display:flex;align-items:center;justify-content:center;animation:fadeIn .2s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{background:var(--surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);max-width:560px;width:90%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+.modal-header{padding:var(--space-md) var(--space-lg);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;font-weight:600}
+.modal-body{flex:1;overflow-y:auto;padding:var(--space-md) var(--space-lg)}
+.modal-footer{padding:var(--space-md) var(--space-lg);border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:var(--space-sm)}
+.modal-close{background:none;font-size:18px;color:var(--text-tertiary);cursor:pointer;border:none}.modal-close:hover{color:var(--text-primary)}
+.modal-btn{padding:8px 16px;border-radius:var(--radius);font-size:var(--font-sm);font-weight:500;background:var(--surface-alt);color:var(--text-primary);transition:all var(--transition);cursor:pointer;border:none}
+.modal-btn:hover{background:var(--border-light)}.modal-btn.primary{background:var(--primary);color:#fff}.modal-btn.primary:hover{background:var(--primary-dark)}
+.toast-container{position:fixed;top:calc(var(--topbar-h) + var(--alert-h) + var(--space-md));right:var(--space-lg);z-index:400;display:flex;flex-direction:column;gap:var(--space-sm)}
+.toast{padding:10px 16px;border-radius:var(--radius);font-size:var(--font-sm);font-weight:500;box-shadow:var(--shadow-lg);display:flex;align-items:center;gap:var(--space-sm);animation:slideInRight .3s ease;background:var(--surface);border:1px solid var(--border);max-width:320px;transition:all .3s ease}
+.toast.success{border-color:var(--success);color:var(--success)}.toast.error{border-color:var(--danger);color:var(--danger)}.toast.info{border-color:var(--info);color:var(--info)}
+@keyframes slideInRight{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+.skeleton{background:linear-gradient(90deg,var(--border-light) 25%,var(--surface-alt) 50%,var(--border-light) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:var(--radius)}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.help-badge{display:inline-flex;width:18px;height:18px;border-radius:50%;background:var(--border-light);align-items:center;justify-content:center;font-size:10px;color:var(--text-tertiary);cursor:help;transition:all var(--transition)}
+.help-badge:hover{background:var(--primary-light);color:var(--primary-dark)}
+.guide-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000}
+.guide-tooltip{position:fixed;background:var(--surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:var(--space-lg);max-width:300px;z-index:1001;font-size:var(--font-sm)}
+.guide-tooltip h4{margin-bottom:var(--space-sm)}.guide-tooltip p{color:var(--text-secondary);margin-bottom:var(--space-md)}
+.guide-actions{display:flex;gap:var(--space-sm);justify-content:flex-end}.guide-step{font-size:var(--font-xs);color:var(--text-tertiary);margin-bottom:var(--space-sm)}
+.resize-handle{width:4px;background:transparent;cursor:col-resize;transition:background var(--transition)}
+.resize-handle:hover,.resize-handle.active{background:var(--primary)}
+.offline-notice{background:#FEF3C7;color:#92400E;text-align:center;padding:6px;font-size:12px;font-weight:600}
+[data-theme=dark] .offline-notice{background:#3F3518;color:#FCD34D}
+@media(max-width:1200px){.aux-panel{width:0;min-width:0;border:none;overflow:hidden}.aux-toggle{display:none}}
+@media(max-width:768px){.sidebar{width:56px;min-width:56px}.sidebar .agent-name,.sidebar .agent-desc,.sidebar .agent-pending-count{display:none}.agent-card{justify-content:center;padding:10px 8px}.agent-info{display:none}.sidebar-header span{display:none}.sidebar-header-actions{flex-direction:column;gap:2px}.sidebar-header-btn{font-size:9px;padding:2px 4px}.nav-links{overflow-x:auto;gap:0}.nav-link{padding:6px 8px;font-size:11px}.topbar .logo{font-size:13px}.data-cards-area{flex-direction:column}.scene-history-cards{flex-direction:column}.scene-card{min-width:auto}.nav-right{gap:4px}.topbar-btn,.privacy-toggle{font-size:10px;padding:4px 6px}}
+</style>
+
+</head>
+<body>
+<div id="app">
+
+<div class="alert-bar info" id="alertBar"><div class="alert-content" id="alertContent"><span class="alert-level-tag" id="alertLevelTag">提醒</span><span id="alertText">冰箱有3件食材今日到期，建议优先处理</span></div><div class="alert-actions"><button class="alert-handle-btn" onclick="handleAlert()">前往处理</button><span class="alert-count" id="alertCount">1/3</span><div class="alert-nav"><button class="alert-nav-btn" onclick="prevAlert()">&#9664;</button><button class="alert-nav-btn" onclick="nextAlert()">&#9654;</button></div><button class="alert-dismiss" onclick="toggleAlerts()">&#9662;</button></div></div>
+
+<nav class="topbar"><div class="logo">&#127968; 家务AI管家 <span class="version-tag">v5.0</span></div><div class="nav-links"><a href="#" class="nav-link active" data-nav="chat">&#128172; 对话中枢</a><a href="#" class="nav-link" data-nav="overview">&#128202; 总览驾驶舱</a><a href="#" class="nav-link" data-nav="automation">&#9889; 自动化工作台</a><a href="#" class="nav-link" data-nav="memory">&#129504; 家庭记忆库</a><a href="#" class="nav-link" data-nav="agents">&#129302; 智能体选型</a></div><div class="nav-right"><div class="member-switch" onclick="toggleMemberMenu()"><div class="member-avatar" id="memberAvatar">&#128100;</div><span id="memberName">主人</span><span style="font-size:10px">&#9662;</span><div class="member-menu" id="memberMenu"><div class="member-option" onclick="switchMember(&apos;owner&apos;)">&#128100; 主人 <span class="role-tag">全部权限</span></div><div class="member-option" onclick="switchMember(&apos;elder&apos;)">&#129459; 长辈 <span class="role-tag">简化视图</span></div><div class="member-option" onclick="switchMember(&apos;child&apos;)">&#128118; 儿童 <span class="role-tag">受限模式</span></div></div></div><div class="compute-badge" id="computeBadge"><span class="dot"></span><span id="computeLabel">就绪</span></div><button class="privacy-toggle" id="privacyToggle" onclick="togglePrivacy()">&#128274; <span>本地模式</span></button><button class="topbar-btn" onclick="triggerDailyCheck()">&#128269; 每日巡检</button><button class="topbar-btn primary" onclick="triggerSmartCheck()">&#129302; 智能检测</button><button class="theme-switch" onclick="cycleTheme()" title="切换主题">&#127912;</button></div></nav>
+
+<div class="main-layout" id="mainLayout">
+<aside class="sidebar" id="sidebar"><div class="sidebar-header"><span>&#129302; 智能体</span><div class="sidebar-header-actions"><button class="sidebar-header-btn" onclick="batchStartAgents()">&#9654; 启动</button><button class="sidebar-header-btn batch-stop" onclick="batchStopAgents()">&#9209; 停用</button></div></div><div class="agent-list" id="agentList"></div></aside>
+
+<section class="center-panel" id="centerPanel">
+<div class="scene-history" id="sceneHistory"><div class="scene-history-header"><div class="scene-history-title">&#128203; 场景执行历史 <span class="help-badge" title="记录最近自动/手动触发的场景执行情况，按起居/安防/清洁分类">?</span></div><div class="scene-history-actions"><button class="scene-history-btn" onclick="toggleSceneHistory()">折叠全部</button><button class="scene-history-btn" onclick="clearSceneHistory()">清空记录</button></div></div><div class="scene-history-cards" id="sceneCards"></div></div>
+<div class="data-cards-area" id="dataCardsArea"><div class="data-card" id="fridgeCard"><div class="data-card-header"><span>&#129366; 冰箱库存图谱</span><div class="data-card-header-actions"><span class="help-badge" title="红色今日到期、橙色3天内、绿色充足">?</span><button class="data-card-header-btn" onclick="toggleCardMinimize(&apos;fridgeCard&apos;)">&#9472;</button></div></div><div class="data-card-body" id="fridgeBody"></div></div><div class="resize-handle" id="cardResizeHandle"></div><div class="data-card" id="priceCard"><div class="data-card-header"><span>&#128176; 采购比价清单</span><div class="data-card-header-actions"><span class="help-badge" title="对比盒马、永辉、美团买菜价格，自动推荐最优方案">?</span><button class="data-card-header-btn" onclick="toggleCardMinimize(&apos;priceCard&apos;)">&#9472;</button></div></div><div class="data-card-body" id="priceBody"></div></div></div>
+<div class="chat-input-area"><div class="quick-cmds" id="quickCmds"></div><div class="input-toolbar"><button class="input-tool-btn" id="voiceBtn" onclick="toggleVoice()" title="语音输入">&#127908;</button><button class="input-tool-btn" onclick="triggerCamera()" title="小票拍照识别">&#128247;</button><button class="input-tool-btn" onclick="showQuickCmdTemplates()" title="快捷指令模板">&#9889;</button></div><div class="input-row"><input type="text" id="userInput" placeholder="输入您想做的事情..." onkeydown="if(event.key===&quot;Enter&quot;&&!event.shiftKey){event.preventDefault();sendMessage()}"><button class="clear-ctx-btn" onclick="clearContext()">清空</button><button class="send-btn" onclick="sendMessage()">&#10148;</button></div></div>
+</section>
+
+<aside class="aux-panel" id="auxPanel">
+<div class="aux-section" id="taskQueueSection"><div class="aux-section-header"><div class="aux-section-title">&#9203; 跨Agent任务队列 <span class="help-badge" title="需多个智能体协同完成的任务，按进度排序">?</span></div><button class="aux-section-collapse" onclick="toggleAuxSection(&apos;taskQueueSection&apos;)">&#9662;</button></div><div class="aux-section-content" id="taskQueueContent"></div></div>
+<div class="aux-section" id="sceneQuickSection"><div class="aux-section-header"><div class="aux-section-title">&#127916; 场景快捷执行 <span class="help-badge" title="一键执行预设家庭场景，hover可预览联动设备清单">?</span></div><button class="aux-section-collapse" onclick="toggleAuxSection(&apos;sceneQuickSection&apos;)">&#9662;</button></div><div class="aux-section-content"><div class="scene-btn-grid" id="sceneBtnGrid"></div></div></div>
+<div class="aux-section" id="aiBriefSection"><div class="aux-section-header"><div class="aux-section-title">&#128203; 全局AI简报 <span class="help-badge" title="汇总所有智能体关键信息，按严重程度分级展示">?</span></div><button class="aux-section-collapse" onclick="toggleAuxSection(&apos;aiBriefSection&apos;)">&#9662;</button></div><div class="aux-section-content"><div class="brief-list" id="briefList"></div></div></div>
+</aside>
+<button class="aux-toggle" id="auxToggle" onclick="toggleAuxPanel()">&#9664;</button>
+</div>
+
+<div class="kb-bar" id="kbBar" onclick="toggleKBPanel()"><span>&#128270;</span><span>BGE-M3 家庭长期记忆检索引擎 &#8212; 点击打开检索面板（向量检索 + BM25 + Reranker）</span><span class="kb-shortcut">Ctrl+K</span></div>
+<div class="kb-panel hidden" id="kbPanel"><div class="kb-panel-header"><span>&#128270; BGE-M3 家庭长期记忆检索引擎</span><div style="display:flex;gap:8px;align-items:center;"><span style="font-size:10px;color:var(--text-tertiary);">向量检索 + BM25 + Reranker</span><button class="modal-close" onclick="toggleKBPanel()">&#10005;</button></div></div><div class="kb-panel-body" id="kbPanelBody"><div style="text-align:center;padding:40px;color:var(--text-tertiary);"><div style="font-size:36px;margin-bottom:12px;">&#128218;</div><div>输入关键词搜索家庭知识库</div><div style="font-size:11px;margin-top:4px;">覆盖食材、家电维保、菜谱做法、家庭日程等</div></div></div><div class="kb-panel-input-row"><input type="text" id="kbPanelInput" placeholder="输入搜索内容..." onkeydown="if(event.key===&quot;Enter&quot;)kbPanelSearch()"><button class="kb-panel-search-btn" onclick="kbPanelSearch()">搜索</button></div></div>
+</div>
+<input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none" onchange="handleImageUpload(event)">
+<div class="toast-container" id="toastContainer"></div>
+<div id="modalContainer"></div>
+<div class="agent-tooltip" id="agentTooltip" style="display:none"></div>
+
+<script>
+/* ====== 家务AI管家 v5.0 核心引擎 ====== */
+var STATE={theme:localStorage.getItem('aol_theme')||'cozy',currentAgent:'shopping',privacyMode:'local',member:'owner',auxPanelVisible:true,sceneHistoryVisible:true,alerts:[],currentAlertIdx:0,agents:[],tasks:[],scenes:[],briefs:[],chatHistory:[],fridgeItems:[],priceItems:[],sceneHistoryData:[]};
+var AGENT_DEFS=[{id:'shopping',name:'购物管家',icon:'🛒',desc:'食材库存 · 比价 · 清单',color:'shopping',status:'running',pendingCount:2,tooltip:'管理冰箱库存与采购清单，自动比价推荐最优超市，支持语音/拍照添加食材，临期预警及补货提醒。'},{id:'meal',name:'膳食规划师',icon:'🍳',desc:'菜谱 · 营养 · 搭配',color:'meal',status:'running',pendingCount:0,tooltip:'根据冰箱库存与家人健康数据生成每周菜谱，支持中餐西餐多种模式，营养素摄入追踪。'},{id:'appliance',name:'家电调度员',icon:'⚡',desc:'错峰 · 协同 · 省电',color:'appliance',status:'running',pendingCount:1,tooltip:'智能调度洗碗机、洗衣机、热水器等家电错峰运行，预估月度电费，异常用电预警。'},{id:'maintenance',name:'维保小卫士',icon:'🔧',desc:'保养 · 维修 · 账单',color:'maintenance',status:'running',pendingCount:3,tooltip:'追踪全屋设备维保周期，自动预约物业维修，记录维修历史与费用，到期智能提醒。'},{id:'security',name:'安防监护Agent',icon:'🛡️',desc:'门禁 · 监控 · 预警',color:'security',status:'stopped',pendingCount:0,tooltip:'管理门禁系统、监控摄像与烟雾/燃气传感器，异常事件实时推送，家人出入记录追踪。'},{id:'household',name:'家庭事务Agent',icon:'📋',desc:'日程 · 快递 · 物业',color:'household',status:'running',pendingCount:1,tooltip:'整合家庭日历、快递包裹追踪、物业费缴纳提醒，记录家庭重要事件与备忘。'}];
+var ALERTS_DATA=[{level:'emergency',text:'厨房烟雾传感器触发预警，请立即检查！',tag:'紧急',action:'查看详情'},{level:'warning',text:'冰箱3件食材今日到期，建议优先处理',tag:'预警',action:'查看清单'},{level:'info',text:'空调滤网已使用60天，建议本月内清洗',tag:'提醒',action:'预约维保'}];
+var SCENE_HISTORY_DATA=[{time:'今天 07:15',trigger:'auto',category:'morning',title:'早安模式',desc:'窗帘开启、咖啡机预热、播放晨间新闻',agent:'家电调度员'},{time:'今天 08:30',trigger:'manual',category:'security',title:'离家布防',desc:'全屋门窗检查、安防系统启动、非必要电器断电',agent:'安防监护Agent'},{time:'昨天 19:00',trigger:'auto',category:'cleaning',title:'全屋清扫',desc:'扫地机器人启动全屋清扫，完成后自动回充',agent:'维保小卫士'},{time:'昨天 14:00',trigger:'manual',category:'morning',title:'午间采购确认',desc:'确认采购清单，自动比价并推送最优方案',agent:'购物管家'}];
+var FRIDGE_DATA=[{name:'鸡蛋',qty:'8枚',expiry:'剩余0天',days:0,level:'expired'},{name:'鲜牛奶',qty:'500ml',expiry:'剩余0天',days:0,level:'expired'},{name:'菠菜',qty:'200g',expiry:'剩余1天',days:1,level:'soon'},{name:'鸡胸肉',qty:'300g',expiry:'剩余2天',days:2,level:'soon'},{name:'西红柿',qty:'4个',expiry:'剩余5天',days:5,level:'fresh'},{name:'西兰花',qty:'1颗',expiry:'剩余6天',days:6,level:'fresh'},{name:'大米',qty:'5kg',expiry:'剩余180天',days:180,level:'fresh'}];
+var PRICE_DATA=[{name:'鸡蛋 (30枚)',storeA:'盒马 \xa519.9',storeB:'永辉 \xa518.5',storeC:'美团买菜 \xa521.0',best:'永辉',save:'1.4'},{name:'鲜牛奶 (1L)',storeA:'盒马 \xa512.9',storeB:'永辉 \xa513.5',storeC:'美团买菜 \xa511.9',best:'美团买菜',save:'1.6'},{name:'鸡胸肉 (500g)',storeA:'盒马 \xa515.8',storeB:'永辉 \xa514.9',storeC:'美团买菜 \xa516.5',best:'永辉',save:'1.6'},{name:'大米 (5kg)',storeA:'盒马 \xa539.9',storeB:'永辉 \xa535.0',storeC:'美团买菜 \xa542.0',best:'永辉',save:'7.0'}];
+var TASKS_DATA=[{id:1,agent:'购物管家 → 膳食规划师',desc:'采购完成 → 生成本周菜谱',progress:75,eta:'预计3分钟',status:'running',agentColor:'shopping'},{id:2,agent:'家电调度员',desc:'错峰预约执行中（洗碗机）',progress:40,eta:'预计15分钟',status:'running',agentColor:'appliance'},{id:3,agent:'维保小卫士',desc:'空调滤网更换排期中',progress:0,eta:'等待确认',status:'waiting',agentColor:'maintenance'},{id:4,agent:'安防监护Agent',desc:'月度安防系统自检',progress:0,eta:'等待调度',status:'waiting',agentColor:'security'}];
+var SCENES_DATA=[{id:'morning',icon:'🌅',name:'早安模式',hint:'窗帘·咖啡机·新闻',devices:['客厅电动窗帘','厨房咖啡机','客厅音响']},{id:'away',icon:'🚶',name:'离家布防',hint:'门窗·安防·断电',devices:['全屋门窗传感器','安防摄像头','非必要电器开关']},{id:'evening',icon:'🌙',name:'晚安就寝',hint:'灯光·空调·门锁',devices:['全屋灯光','卧室空调','门锁检测']},{id:'movie',icon:'🎬',name:'观影模式',hint:'灯光·投影·窗帘',devices:['客厅灯光调暗','投影仪','客厅窗帘']},{id:'cleaning',icon:'🧹',name:'全屋清扫',hint:'扫地机·拖地机',devices:['扫地机器人','拖地机器人']},{id:'dinner',icon:'🍽️',name:'晚餐准备',hint:'烤箱·电饭煲',devices:['烤箱预热','电饭煲','餐厅灯光']}];
+var BRIEFS_DATA=[{level:'emergency',icon:'🚨',text:'厨房烟雾传感器触发预警，需立即处理',action:'前往处理'},{level:'warning',icon:'⚠️',text:'冰箱3件食材今日到期，建议尽快消耗',action:'前往处理'},{level:'warning',icon:'🔧',text:'空调滤网已使用60天，建议本月清洗',action:'前往处理'},{level:'info',icon:'📊',text:'本月电费预估\xa5285，比上月降低12%',action:'前往处理'},{level:'info',icon:'🛒',text:'京东618家电专场，洗碗机限时优惠',action:'前往处理'},{level:'info',icon:'📦',text:'快递包裹已送达小区快递柜，请及时取件',action:'前往处理'}];
+function deepCopy(o){return JSON.parse(JSON.stringify(o))}
+function persistState(){var s={theme:STATE.theme,currentAgent:STATE.currentAgent,privacyMode:STATE.privacyMode,member:STATE.member,agents:STATE.agents,chatHistory:STATE.chatHistory};try{localStorage.setItem("aol_v5_state",JSON.stringify(s))}catch(e){}}
+
+function loadFridgeFromAPI(){fetch('/api/v1/shopping/fridge/user_001').then(function(r){return r.json()}).then(function(d){if(d.items&&d.items.length>0){STATE.fridgeItems=d.items.map(function(item){var days=item.expiry_days||0;if(item.expiry_days==null){var defs={'蔬菜':3,'水果':5,'肉类':2,'海鲜':1,'乳制品':7,'粮油':180,'调味品':365,'饮品':30,'零食':90};days=defs[item.category]||30}var level=days<0?'expired':days<=3?'soon':'fresh';var expiryText=days<0?'已过期':'剩余'+days+'天';return{name:item.name,qty:(item.quantity||1)+' '+(item.unit||'个'),expiry:expiryText,days:days,level:level}});renderFridge()}}).catch(function(){})}
+function loadBriefFromAPI(){fetch('/api/v1/household/brief/user_001').then(function(r){return r.json()}).then(function(d){var items=[];if(d.overall_summary)items.push({level:'info',icon:'📊',text:d.overall_summary,action:'查看详情'});if(d.shopping_alert)items.push({level:'warning',icon:'🛒',text:d.shopping_alert,action:'前往处理'});if(d.maintenance_alert)items.push({level:'warning',icon:'🔧',text:d.maintenance_alert,action:'前往处理'});if(d.security_status&&!d.security_status.includes('正常'))items.push({level:'emergency',icon:'🚨',text:d.security_status,action:'立即处理'});else if(d.security_status)items.push({level:'info',icon:'🛡️',text:d.security_status,action:'查看详情'});if(d.household_tasks)items.push({level:'info',icon:'📋',text:d.household_tasks,action:'查看日程'});if(items.length>0){STATE.briefs=items;renderBriefs()}}).catch(function(){})}
+function loadTasksFromAPI(){fetch('/api/v1/household/task-queue/user_001').then(function(r){return r.json()}).then(function(d){if(d.queue&&d.queue.length>0){STATE.tasks=d.queue.map(function(t,i){var cm={'🛒':'shopping','🍳':'meal','⚡':'appliance','🔧':'maintenance','🛡️':'security','📋':'household'};var color='shopping';for(var k in cm){if(t.from_agent&&t.from_agent.indexOf(k)>=0){color=cm[k];break}}var prog=t.status==='done'?100:t.status==='running'?Math.floor(Math.random()*40+30):0;return{id:i+1,agent:(t.from_agent||'')+(t.to_agent?' → '+t.to_agent:''),desc:t.desc||t.description||'',progress:prog,eta:t.status==='done'?'已完成':t.status==='running'?'执行中':'等待中',status:t.status==='done'?'waiting':t.status==='running'?'running':'waiting',agentColor:color}});renderTasks()}}).catch(function(){})}
+function init(){
+  STATE.agents=deepCopy(AGENT_DEFS);STATE.alerts=deepCopy(ALERTS_DATA);STATE.tasks=deepCopy(TASKS_DATA);STATE.scenes=deepCopy(SCENES_DATA);STATE.briefs=deepCopy(BRIEFS_DATA);STATE.fridgeItems=deepCopy(FRIDGE_DATA);STATE.priceItems=deepCopy(PRICE_DATA);STATE.sceneHistoryData=deepCopy(SCENE_HISTORY_DATA);
+  var saved=localStorage.getItem("aol_v5_state");if(saved)try{var p=JSON.parse(saved);if(p.theme)STATE.theme=p.theme;if(p.currentAgent)STATE.currentAgent=p.currentAgent;if(p.agents)STATE.agents=p.agents;if(p.chatHistory)STATE.chatHistory=p.chatHistory}catch(e){}
+  applyTheme(STATE.theme);renderAll();updateAlertBar();setupCardResize();setupKeyboardShortcuts();setupNavLinks();loadFridgeFromAPI();loadBriefFromAPI();loadTasksFromAPI();
+  document.getElementById("memberName").textContent="主人";document.getElementById("privacyToggle").classList.add("active");
+  if(!localStorage.getItem("aol_v5_guided"))setTimeout(showNewbieGuide,600);
+  setInterval(function(){var c=false;STATE.tasks.forEach(function(t){if(t.status==="running"&&t.progress<100){t.progress=Math.min(100,t.progress+Math.floor(Math.random()*5+1));c=true;if(t.progress>=100){t.status="completed";t.eta="已完成"}}});if(c)renderTasks()},3000);
+}
+
+function applyTheme(t){document.documentElement.setAttribute("data-theme",t);STATE.theme=t;localStorage.setItem("aol_theme",t);persistState()}
+function cycleTheme(){var th=["light","dark","cozy"],nm={light:"浅色",dark:"深色夜间",cozy:"居家柔和"};var i=th.indexOf(STATE.theme);var n=th[(i+1)%3];applyTheme(n);showToast("主题切换为："+nm[n],"info")}
+
+function renderAll(){renderAgents();renderSceneHistory();renderFridge();renderPrice();renderTasks();renderScenes();renderBriefs();renderQuickCmds()}
+
+function renderAgents(){
+  var c=document.getElementById("agentList"),h="";
+  STATE.agents.forEach(function(a){
+    var sc=a.status==="running"?"running":a.status==="stopped"?"stopped":"pending";
+    var pb=a.pendingCount>0?"<span class=\"agent-pending-count\">"+a.pendingCount+"</span>":"";
+    var ac=STATE.currentAgent===a.id?" active":"";
+    h+="<div class=\"agent-card"+ac+"\" data-agent=\""+a.id+"\" draggable=\"true\" onclick=\"switchAgent(&apos;"+a.id+"&apos;)\" oncontextmenu=\"showAgentContextMenu(event,&apos;"+a.id+"&apos;);return false\" onmouseenter=\"showAgentTooltip(event,&apos;"+a.id+"&apos;)\" onmouseleave=\"hideAgentTooltip()\" ondragstart=\"agentDragStart(event,&apos;"+a.id+"&apos;)\" ondragover=\"agentDragOver(event)\" ondragleave=\"agentDragLeave(event)\" ondrop=\"agentDrop(event,&apos;"+a.id+"&apos;)\" ondragend=\"agentDragEnd(event)\"><div class=\"agent-icon-wrap\"><div class=\"agent-icon\">"+a.icon+"</div>"+(a.pendingCount>0?pb:"<span class=\"agent-status-dot "+sc+"\"></span>")+"</div><div class=\"agent-info\"><div class=\"agent-name\">"+a.name+"</div><div class=\"agent-desc\">"+a.desc+"</div></div></div>";
+  });
+  c.innerHTML=h;
+}
+
+function switchAgent(id){STATE.currentAgent=id;renderAgents();renderQuickCmds();var a=STATE.agents.find(function(x){return x.id===id});if(a)showToast("已切换到："+a.name,"info");persistState()}
+
+function showAgentContextMenu(e,id){
+  var a=STATE.agents.find(function(x){return x.id===id});if(!a)return;closeContextMenu();
+  var m=document.createElement("div");m.className="agent-context-menu";m.style.left=e.clientX+"px";m.style.top=e.clientY+"px";
+  m.innerHTML="<div class=\"ctx-item\" onclick=\"switchAgent(&apos;"+id+"&apos;);closeContextMenu()\">✅ 切换到此智能体</div><div class=\"ctx-item\" onclick=\"toggleAgentStatus(&apos;"+id+"&apos;);closeContextMenu()\">"+(a.status==="running"?"⏸ 暂停":"▶ 启动")+"此智能体</div><div class=\"ctx-divider\"></div><div class=\"ctx-item\" onclick=\"viewAgentDetail(&apos;"+id+"&apos;);closeContextMenu()\">📋 查看运行详情</div><div class=\"ctx-item\" onclick=\"configureAgent(&apos;"+id+"&apos;);closeContextMenu()\">⚙️ 配置参数</div>";
+  document.body.appendChild(m);setTimeout(function(){document.addEventListener("click",closeContextMenu,{once:true})},0);
+}
+function closeContextMenu(){var m=document.querySelector(".agent-context-menu");if(m)m.remove()}
+function toggleAgentStatus(id){var a=STATE.agents.find(function(x){return x.id===id});if(!a)return;a.status=a.status==="running"?"stopped":"running";if(a.status==="stopped")a.pendingCount=0;renderAgents();showToast(a.name+(a.status==="running"?" 已启动":" 已停用"),"info");persistState()}
+function viewAgentDetail(id){showToast("查看 "+id+" 运行详情（功能开发中）","info")}
+function configureAgent(id){showToast("配置 "+id+" 参数（功能开发中）","info")}
+
+function showAgentTooltip(e,id){var a=STATE.agents.find(function(x){return x.id===id});if(!a)return;var t=document.getElementById("agentTooltip");t.textContent=a.tooltip;t.style.display="block";var r=e.currentTarget.getBoundingClientRect();t.style.left=(r.right+12)+"px";t.style.top=r.top+"px"}
+function hideAgentTooltip(){document.getElementById("agentTooltip").style.display="none"}
+
+var dragSrcId=null;
+function agentDragStart(e,id){dragSrcId=id;e.currentTarget.classList.add("dragging");e.dataTransfer.effectAllowed="move"}
+function agentDragOver(e){e.preventDefault();e.currentTarget.classList.add("drag-over")}
+function agentDragLeave(e){e.currentTarget.classList.remove("drag-over")}
+function agentDrop(e,tid){e.preventDefault();e.currentTarget.classList.remove("drag-over");if(dragSrcId===tid)return;var si=STATE.agents.findIndex(function(x){return x.id===dragSrcId}),ti=STATE.agents.findIndex(function(x){return x.id===tid});if(si<0||ti<0)return;var mv=STATE.agents.splice(si,1)[0];STATE.agents.splice(ti,0,mv);renderAgents();showToast("智能体排序已更新","info");persistState()}
+function agentDragEnd(e){e.currentTarget.classList.remove("dragging");document.querySelectorAll(".agent-card.drag-over").forEach(function(c){c.classList.remove("drag-over")})}
+
+function batchStartAgents(){STATE.agents.forEach(function(a){a.status="running"});renderAgents();showToast("全部智能体已启动","success");persistState()}
+function batchStopAgents(){STATE.agents.forEach(function(a){a.status="stopped";a.pendingCount=0});renderAgents();showToast("全部智能体已停用","info");persistState()}
+
+function renderSceneHistory(){
+  var c=document.getElementById("sceneCards");
+  if(!STATE.sceneHistoryVisible){c.innerHTML="";return}
+  c.innerHTML=STATE.sceneHistoryData.map(function(s,i){return "<div class=\"scene-card "+s.category+"\"><div class=\"scene-card-time\"><span>"+s.time+"</span><span class=\"scene-card-trigger "+s.trigger+"\">"+(s.trigger==="auto"?"自动":"手动")+"</span></div><div class=\"scene-card-title\">"+s.title+"</div><div class=\"scene-card-desc\">"+s.desc+" · "+s.agent+"</div><div class=\"scene-card-actions\"><button class=\"scene-card-btn\" onclick=\"rerunScene("+i+")\">🔄 重新执行</button><button class=\"scene-card-btn\" onclick=\"favScene("+i+")\">⭐ 收藏</button><button class=\"scene-card-btn danger\" onclick=\"delSceneHistory("+i+")\">🗑 删除</button></div></div>"}).join("");
+}
+function toggleSceneHistory(){STATE.sceneHistoryVisible=!STATE.sceneHistoryVisible;var b=document.querySelector(".scene-history-btn");if(b)b.textContent=STATE.sceneHistoryVisible?"折叠全部":"展开全部";renderSceneHistory()}
+function clearSceneHistory(){STATE.sceneHistoryData=[];renderSceneHistory();showToast("场景历史记录已清空","info")}
+function rerunScene(i){var s=STATE.sceneHistoryData[i];showToast("正在重新执行："+s.title,"info");setTimeout(function(){showToast(s.title+" 执行完成","success")},2000)}
+function favScene(i){showToast(STATE.sceneHistoryData[i].title+" 已收藏","success")}
+function delSceneHistory(i){STATE.sceneHistoryData.splice(i,1);renderSceneHistory();showToast("记录已删除","info")}
+
+function renderFridge(){
+  var c=document.getElementById("fridgeBody");
+  c.innerHTML=STATE.fridgeItems.map(function(item){return "<div class=\"fridge-item\"><span class=\"fridge-expiry "+item.level+"\">"+item.expiry+"</span><span class=\"fridge-name\">"+item.name+"</span><span class=\"fridge-qty\">"+item.qty+"</span></div>"}).join("")+"<button class=\"fridge-expand-btn\" onclick=\"showFridgeModal()\">查看完整食材清单 ("+STATE.fridgeItems.length+"件)</button>";
+}
+function showFridgeModal(){
+  var h="<div class=\"modal-overlay\" onclick=\"this.remove()\"><div class=\"modal\" onclick=\"event.stopPropagation()\" style=\"max-width:640px;\"><div class=\"modal-header\"><span>冰箱完整食材清单</span><button class=\"modal-close\" onclick=\"this.closest(&apos;.modal-overlay&apos;).remove()\">x</button></div><div class=\"modal-body\"><table style=\"width:100%;border-collapse:collapse;font-size:13px;\"><thead><tr style=\"border-bottom:2px solid var(--border);text-align:left;color:var(--text-secondary);\"><th style=\"padding:8px;\">食材</th><th style=\"padding:8px;\">数量</th><th style=\"padding:8px;\">保质期</th><th style=\"padding:8px;\">剩余天数</th><th style=\"padding:8px;\">状态</th></tr></thead><tbody>"+STATE.fridgeItems.map(function(item){return "<tr style=\"border-bottom:1px solid var(--border-light);\"><td style=\"padding:8px;\">"+item.name+"</td><td style=\"padding:8px;\">"+item.qty+"</td><td style=\"padding:8px;\">"+item.expiry+"</td><td style=\"padding:8px;\">"+item.days+"天</td><td style=\"padding:8px;\"><span class=\"fridge-expiry "+item.level+"\" style=\"display:inline-block;\">"+(item.level==="expired"?"今日到期":item.level==="soon"?"3天内":"充足")+"</span></td></tr>"}).join("")+"</tbody></table></div><div class=\"modal-footer\"><button class=\"modal-btn\" onclick=\"this.closest(&apos;.modal-overlay&apos;).remove()\">关闭</button><button class=\"modal-btn primary\" onclick=\"exportReport(&apos;fridge&apos;);this.closest(&apos;.modal-overlay&apos;).remove()\">导出清单</button></div></div></div>";
+  document.getElementById("modalContainer").innerHTML=h;
+}
+function renderPrice(){
+  var c=document.getElementById("priceBody");
+  c.innerHTML=STATE.priceItems.map(function(item){return "<div class=\"price-item\"><div style=\"flex:1;min-width:0;\"><div style=\"font-weight:600;\">"+item.name+"</div><div style=\"font-size:11px;color:var(--text-tertiary);\">"+item.storeA+" | "+item.storeB+" | "+item.storeC+"</div></div><div style=\"text-align:right;\"><div style=\"font-weight:700;color:var(--success);\">最优："+item.best+"</div><div class=\"price-save\">省 "+item.save+"</div></div></div>"}).join("")+"<div style=\"margin-top:8px;padding-top:8px;border-top:1px solid var(--border-light);display:flex;gap:4px;justify-content:flex-end;\"><button class=\"export-btn\" onclick=\"showPriceHistory()\">历史比价</button><button class=\"export-btn\" onclick=\"exportReport(&apos;price&apos;)\">导出报表</button></div>";
+}
+function showPriceHistory(){
+  var hi=[{date:"7月20日",name:"鸡蛋",best:"永辉",save:"1.4"},{date:"7月18日",name:"牛奶",best:"美团买菜",save:"0.8"},{date:"7月15日",name:"大米",best:"永辉",save:"5.0"}];
+  var h="<div class=\"modal-overlay\" onclick=\"this.remove()\"><div class=\"modal\" onclick=\"event.stopPropagation()\"><div class=\"modal-header\"><span>历史比价记录</span><button class=\"modal-close\" onclick=\"this.closest(&apos;.modal-overlay&apos;).remove()\">x</button></div><div class=\"modal-body\">"+hi.map(function(x){return "<div style=\"padding:8px;border-bottom:1px solid var(--border-light);font-size:13px;\"><span style=\"color:var(--text-tertiary);\">"+x.date+"</span> "+x.name+" 最优 "+x.best+" 省 "+x.save+"</div>"}).join("")+"</div><div class=\"modal-footer\"><button class=\"modal-btn\" onclick=\"this.closest(&apos;.modal-overlay&apos;).remove()\">关闭</button></div></div></div>";
+  document.getElementById("modalContainer").innerHTML=h;
+}
+function renderTasks(){
+  var c=document.getElementById("taskQueueContent");
+  c.innerHTML=STATE.tasks.map(function(t){var ac=t.status==="running"?"running":"";return "<div class=\"task-item "+t.status+"\"><span class=\"task-agent-badge\" style=\"background:var(--"+t.agentColor+"-light);color:var(--"+t.agentColor+");\">"+t.agent+"</span><div style=\"flex:1;min-width:0;\"><div style=\"font-size:11px;\">"+t.desc+"</div><div class=\"task-progress-bar\"><div class=\"task-progress-fill "+ac+"\" style=\"width:"+t.progress+"%\"></div></div></div><span class=\"task-time\">"+t.eta+"</span><button class=\"task-cancel-btn\" onclick=\"cancelTask("+t.id+")\" title=\"终止任务\">终止</button></div>"}).join("");
+}
+function cancelTask(tid){STATE.tasks=STATE.tasks.filter(function(t){return t.id!==tid});renderTasks();showToast("任务已终止","info")}
+
+function renderScenes(){
+  var c=document.getElementById("sceneBtnGrid");
+  c.innerHTML=STATE.scenes.map(function(s){return "<button class=\"scene-btn\" id=\"sceneBtn_"+s.id+"\" onclick=\"runScene(&apos;"+s.id+"&apos;)\" onmouseenter=\"showSceneHint(event,&apos;"+s.id+"&apos;)\" onmouseleave=\"hideSceneHint()\"><span class=\"scene-btn-icon\">"+s.icon+"</span><span>"+s.name+"</span><span class=\"scene-hint\">"+s.hint+"</span></button>"}).join("");
+}
+
+function runScene(sid){
+  var s=STATE.scenes.find(function(x){return x.id===sid});if(!s)return;
+  var b=document.getElementById("sceneBtn_"+sid),ir=b.classList.contains("running");
+  if(ir){b.classList.remove("running");showToast(s.name+" 已停止","info");return}
+  b.classList.add("running");showToast(s.name+" 开始执行","success");
+  // Call real API
+  fetch('/api/v1/household/scene',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:'user_001',scene:sid,session_id:'scene_'+sid+'_'+Date.now()})})
+    .then(function(r){return r.json()})
+    .then(function(data){
+      b.classList.remove("running");
+      STATE.sceneHistoryData.unshift({time:new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}),trigger:"manual",category:sid==="cleaning"?"cleaning":sid==="away"?"security":"morning",title:s.name,desc:s.hint,agent:data.status==='executed'?'后端执行':'本地模拟'});
+      renderSceneHistory();
+      showToast(data.status==='executed'?s.name+' 执行完成':s.name+' 本地模拟完成','success');
+    })
+    .catch(function(e){
+      b.classList.remove("running");
+      STATE.sceneHistoryData.unshift({time:"刚刚",trigger:"manual",category:sid==="cleaning"?"cleaning":sid==="away"?"security":"morning",title:s.name,desc:s.hint,agent:"用户手动触发"});
+      renderSceneHistory();showToast(s.name+" 本地模拟完成（后端连接失败）","info");
+    });
+}
+var sceneHintTimeout;
+function showSceneHint(e,sid){var s=STATE.scenes.find(function(x){return x.id===sid});if(!s)return;clearTimeout(sceneHintTimeout);var t=document.getElementById("agentTooltip");t.innerHTML="<strong>"+s.name+" 联动设备：</strong><br>"+s.devices.map(function(d){return "· "+d}).join("<br>");t.style.display="block";var r=e.currentTarget.getBoundingClientRect();t.style.left=Math.max(10,r.left-235)+"px";t.style.top=r.top+"px"}
+function hideSceneHint(){sceneHintTimeout=setTimeout(function(){document.getElementById("agentTooltip").style.display="none"},200)}
+
+function renderBriefs(){document.getElementById("briefList").innerHTML=STATE.briefs.map(function(b){return "<div class=\"brief-item "+b.level+"\" onclick=\"navigateToBrief(&apos;"+b.action+"&apos;)\"><span class=\"brief-icon\">"+b.icon+"</span><span>"+b.text+"</span><span class=\"brief-go\">"+b.action+"</span></div>"}).join("")}
+function navigateToBrief(a){showToast("正在前往处理："+a,"info")}
+
+function renderQuickCmds(){
+  var cm={shopping:["查看冰箱库存","生成采购清单","对比今日菜价","添加新食材"],meal:["生成今日菜谱","查看营养报告","推荐晚餐搭配","计算卡路里"],appliance:["预约错峰用电","查看能耗报告","当前运行状态","设置省电模式"],maintenance:["查看维保计划","预约物业维修","设备状态检查","查看维修记录"],security:["安防状态检查","查看监控回放","门锁状态确认","传感器检测"],household:["查看今日日程","快递包裹追踪","物业费缴纳提醒","添加家庭备忘"]};
+  document.getElementById("quickCmds").innerHTML=(cm[STATE.currentAgent]||cm.shopping).map(function(c){return "<span class=\"quick-cmd-chip\" onclick=\"quickCmd(&apos;"+c+"&apos;)\">"+c+"</span>"}).join("");
+}
+function sendMessage(){var t=document.getElementById("userInput").value.trim();if(!t)return;document.getElementById("userInput").value="";showToast("消息已发送："+t.substring(0,20)+(t.length>20?"...":""),"info");STATE.chatHistory.push({role:"user",text:t,time:new Date().toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"})});persistState();setTimeout(function(){showToast("智能体已回复，点击展开查看详情","success")},600)}
+function quickCmd(c){document.getElementById("userInput").value=c;sendMessage()}
+function clearContext(){STATE.chatHistory=[];showToast("上下文已清空","info");persistState()}
+function toggleVoice(){var b=document.getElementById("voiceBtn");b.classList.toggle("recording");if(b.classList.contains("recording")){showToast("正在聆听语音输入...","info");setTimeout(function(){b.classList.remove("recording");showToast("语音识别完成","success")},2000)}else{showToast("语音输入已停止","info")}}
+function triggerCamera(){document.getElementById("cameraInput").click()}
+function handleImageUpload(e){var f=e.target.files[0];if(!f)return;showToast("正在识别小票内容...","info");setTimeout(function(){showToast("识别完成：鸡蛋、牛奶、鸡胸肉已添加至购物清单","success");e.target.value=""},1500)}
+function showQuickCmdTemplates(){
+  var tm=["生成本周采购清单","查看冰箱临期食材","对比三商超鸡蛋价格","预约明晚错峰用电","查看本月电费预估","预约空调滤网清洗"];
+  document.getElementById("modalContainer").innerHTML="<div class=\"modal-overlay\" onclick=\"this.remove()\"><div class=\"modal\" onclick=\"event.stopPropagation()\"><div class=\"modal-header\"><span>快捷指令模板</span><button class=\"modal-close\" onclick=\"this.closest(&apos;.modal-overlay&apos;).remove()\">x</button></div><div class=\"modal-body\" style=\"display:flex;flex-direction:column;gap:8px;\">"+tm.map(function(t){return "<button class=\"modal-btn\" style=\"text-align:left;width:100%;\" onclick=\"quickCmd(&apos;"+t+"&apos;);this.closest(&apos;.modal-overlay&apos;).remove()\">"+t+"</button>"}).join("")+"</div><div class=\"modal-footer\"><button class=\"modal-btn\" onclick=\"this.closest(&apos;.modal-overlay&apos;).remove()\">关闭</button></div></div></div>";
+}
+
+function toggleMemberMenu(){var m=document.getElementById("memberMenu");m.style.display=m.style.display==="none"?"block":"none";setTimeout(function(){document.addEventListener("click",function h(e){if(!e.target.closest(".member-switch")){m.style.display="none";document.removeEventListener("click",h)}})},0)}
+function switchMember(role){STATE.member=role;var nm={owner:"主人",elder:"长辈",child:"儿童"},av={owner:"&#128100;",elder:"&#129459;",child:"&#128118;"};document.getElementById("memberName").textContent=nm[role];document.getElementById("memberAvatar").innerHTML=av[role];document.getElementById("memberMenu").style.display="none";showToast("已切换至："+nm[role]+"视图","info");if(role==="child"){document.querySelectorAll(".scene-btn").forEach(function(b){b.style.opacity="0.5";b.style.pointerEvents="none"})}else{document.querySelectorAll(".scene-btn").forEach(function(b){b.style.opacity="1";b.style.pointerEvents="auto"})};persistState()}
+function togglePrivacy(){var modes=["local","offline"];var i=modes.indexOf(STATE.privacyMode);STATE.privacyMode=modes[(i+1)%2]||"local";var b=document.getElementById("privacyToggle");if(STATE.privacyMode==="offline"){b.innerHTML="&#128225; <span>离线模式</span>";b.classList.add("offline");b.classList.remove("active");document.getElementById("computeLabel").textContent="离线";var bg=document.getElementById("computeBadge");bg.style.background="var(--warning-light)";bg.style.color="var(--warning)";bg.querySelector(".dot").style.background="var(--warning)";showToast("已切换至离线模式，部分功能受限","info");showGlobalOfflineNotice()}else{b.innerHTML="&#128274; <span>本地模式</span>";b.classList.remove("offline");b.classList.add("active");document.getElementById("computeLabel").textContent="就绪";var bg2=document.getElementById("computeBadge");bg2.style.background="var(--success-light)";bg2.style.color="var(--success)";bg2.querySelector(".dot").style.background="var(--success)";hideGlobalOfflineNotice()}persistState()}
+function showGlobalOfflineNotice(){var n=document.getElementById("offlineNotice");if(!n){n=document.createElement("div");n.id="offlineNotice";n.className="offline-notice";n.textContent="离线模式 - 语音识别、云端比价、远程监控等功能已暂停";var ml=document.querySelector(".main-layout");ml.parentNode.insertBefore(n,ml)}}
+function hideGlobalOfflineNotice(){var n=document.getElementById("offlineNotice");if(n)n.remove()}
+function triggerDailyCheck(){showToast("每日巡检开始...","info");fetch('/api/v1/dashboard/run/daily?user_id=user_001',{method:'POST'}).then(function(r){return r.json()}).then(function(d){showToast("巡检完成："+(d.summary||"所有系统运行正常"),"success");if(d.alerts&&d.alerts.length>0){d.alerts.forEach(function(a){STATE.alerts.unshift({level:'warning',text:a,tag:'巡检',action:'处理'})});updateAlertBar()}}).catch(function(){showToast("巡检完成：所有系统运行正常（后端不可用，本地模拟）","success")})}
+function triggerSmartCheck(){showToast("智能检测启动中...","info");fetch('/api/v1/dashboard/run/smart?user_id=user_001',{method:'POST'}).then(function(r){return r.json()}).then(function(d){showToast("检测完成："+(d.summary||"发现待处理事项"),"success");if(d.alerts&&d.alerts.length>0){d.alerts.forEach(function(a){STATE.briefs.unshift({level:"warning",icon:"!",text:a,action:"前往处理"})});renderBriefs()}}).catch(function(){STATE.briefs.unshift({level:"warning",icon:"!",text:"智能检测发现：卧室空调滤网需清洗",action:"前往处理"});renderBriefs();showToast("检测完成：发现1项待处理事项（后端不可用，本地模拟）","info")})}
+
+function updateAlertBar(){var b=document.getElementById("alertBar");if(STATE.alerts.length===0){b.classList.add("hidden");return}b.classList.remove("hidden");var a=STATE.alerts[STATE.currentAlertIdx%STATE.alerts.length];b.className="alert-bar "+a.level;document.getElementById("alertLevelTag").textContent=a.tag;document.getElementById("alertText").textContent=a.text;document.getElementById("alertCount").textContent=(STATE.currentAlertIdx+1)+"/"+STATE.alerts.length}
+function prevAlert(){STATE.currentAlertIdx=(STATE.currentAlertIdx-1+STATE.alerts.length)%STATE.alerts.length;updateAlertBar()}
+function nextAlert(){STATE.currentAlertIdx=(STATE.currentAlertIdx+1)%STATE.alerts.length;updateAlertBar()}
+function handleAlert(i){var idx=i!==undefined?i:STATE.currentAlertIdx;showToast("正在处理："+STATE.alerts[idx].text,"info");setTimeout(function(){STATE.alerts.splice(idx,1);if(STATE.currentAlertIdx>=STATE.alerts.length)STATE.currentAlertIdx=0;updateAlertBar();showToast("预警已处理完成","success")},1500)}
+function toggleAlerts(){document.getElementById("alertBar").classList.toggle("hidden")}
+
+function toggleAuxPanel(){var p=document.getElementById("auxPanel"),t=document.getElementById("auxToggle");p.classList.toggle("collapsed");t.classList.toggle("collapsed");t.innerHTML=p.classList.contains("collapsed")?"&#9654;":"&#9664;";STATE.auxPanelVisible=!p.classList.contains("collapsed");persistState()}
+function toggleAuxSection(sid){var s=document.getElementById(sid);s.classList.toggle("collapsed");var b=s.querySelector(".aux-section-collapse");if(b)b.innerHTML=s.classList.contains("collapsed")?"&#9656;":"&#9662;"}
+function toggleCardMinimize(cid){var c=document.getElementById(cid);c.classList.toggle("minimized");var b=c.querySelector(".data-card-header-btn");if(b)b.innerHTML=c.classList.contains("minimized")?"&#9633;":"&#9472;"}
+
+function setupCardResize(){var h=document.getElementById("cardResizeHandle"),l=document.getElementById("fridgeCard"),r=document.getElementById("priceCard"),isR=false,sX,sLW;h.addEventListener("mousedown",function(e){isR=true;sX=e.clientX;sLW=l.getBoundingClientRect().width;h.classList.add("active");document.body.style.cursor="col-resize";document.body.style.userSelect="none"});document.addEventListener("mousemove",function(e){if(!isR)return;var dx=e.clientX-sX,cw=document.getElementById("dataCardsArea").getBoundingClientRect().width-4,nw=Math.max(200,Math.min(cw-200,sLW+dx));l.style.flex="none";l.style.width=nw+"px";r.style.flex="1"});document.addEventListener("mouseup",function(){if(isR){isR=false;h.classList.remove("active");document.body.style.cursor="";document.body.style.userSelect=""}})}
+
+function toggleKBPanel(){var p=document.getElementById("kbPanel");p.classList.toggle("hidden");if(!p.classList.contains("hidden"))document.getElementById("kbPanelInput").focus()}
+function kbPanelSearch(){var q=document.getElementById("kbPanelInput").value.trim();if(!q)return;var b=document.getElementById("kbPanelBody");b.innerHTML="<div style="text-align:center;padding:20px;color:var(--text-secondary);">BGE-M3 混合检索中...</div>";fetch('/api/v1/knowledge/search?q='+encodeURIComponent(q)+'&top_k=8&use_llm=true').then(function(r){return r.json()}).then(function(d){var h="";if(d.answer){h+="<div class="kb-search-result" style="border-left:3px solid var(--primary);background:var(--primary-light);"><div class="kb-result-title">AI 回答</div><div class="kb-result-snippet" style="font-size:13px;line-height:1.6;">"+d.answer.replace(/\n/g,'<br>')+"</div></div>"}if(d.results&&d.results.length>0){h+=d.results.map(function(r,i){return "<div class="kb-search-result"><div class="kb-result-title">结果 #"+(i+1)+"</div><div class="kb-result-snippet">"+(r.text||'').substring(0,250)+"</div><div class="kb-result-meta">相关度 "+(Math.round((r.score||0)*100))+"% · "+(r.metadata&&r.metadata.source?r.metadata.source:'知识库')+"</div></div>"}).join("")}if(!d.answer&&(!d.results||!d.results.length)){h="<div style="text-align:center;padding:40px;color:var(--text-tertiary);">未找到「"+q+"」相关内容</div>"}b.innerHTML=h;showToast("搜索完成","info")}).catch(function(e){b.innerHTML="<div style="text-align:center;padding:40px;">检索失败: "+e.message+"<br><div style="margin-top:12px;font-size:12px;color:var(--text-tertiary);">使用本地模拟结果...</div></div>";setTimeout(function(){var rs=[{title:"食材：鸡蛋",snippet:"鸡蛋购于7月18日，保质期至7月21日，存放于冰箱冷藏层第二格。上次采购记录：永辉超市 18.5元/30枚。",meta:"购物管家 · 3天前"},{title:"家电维保：空调滤网",snippet:"客厅空调滤网上次清洗日期：5月22日，建议每90天清洗一次。下次清洗建议日期：8月20日。",meta:"维保小卫士 · 60天前"},{title:"菜谱：番茄炒蛋",snippet:"家常菜谱：番茄2个、鸡蛋3枚、葱花适量。烹饪时间15分钟，适合早/晚餐。历史制作记录：7月15日（晚餐）。",meta:"膳食规划师 · 6天前"}];b.innerHTML=rs.map(function(r){return "<div class="kb-search-result"><div class="kb-result-title">"+r.title+"</div><div class="kb-result-snippet">"+r.snippet+"</div><div class="kb-result-meta">"+r.meta+"</div></div>"}).join("")},600)})}
+function setupKeyboardShortcuts(){document.addEventListener("keydown",function(e){if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();toggleKBPanel()}if(e.ctrlKey&&e.key>="1"&&e.key<="6"){e.preventDefault();var i=parseInt(e.key)-1;if(STATE.agents[i])switchAgent(STATE.agents[i].id)}})}
+function setupNavLinks(){document.querySelectorAll(".nav-link").forEach(function(l){l.addEventListener("click",function(e){e.preventDefault();document.querySelectorAll(".nav-link").forEach(function(x){x.classList.remove("active")});this.classList.add("active");var n=this.dataset.nav;if(n==="overview")showOverviewDashboard();else if(n!=="chat")showToast(this.textContent.trim()+" 模块开发中，即将上线","info")})})}
+function showOverviewDashboard(){
+  var h="<div class="modal-overlay" onclick="this.remove()"><div class="modal" onclick="event.stopPropagation()" style="max-width:800px;width:95%;"><div class="modal-header"><span>总览驾驶舱</span><button class="modal-close" onclick="this.closest(&apos;.modal-overlay&apos;).remove()">&#10005;</button></div><div class="modal-body"><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">";
+  h+="<div style="background:var(--surface-alt);padding:16px;border-radius:var(--radius);"><h4 style="margin-bottom:8px;">食材消耗趋势</h4><div style="display:flex;align-items:flex-end;gap:8px;height:100px;">"+[30,45,38,52,40,48,35].map(function(v,i){return "<div style="flex:1;background:var(--meal);height:"+v+"%;border-radius:4px 4px 0 0;position:relative;"><span style="position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);font-size:10px;color:var(--text-tertiary);">周"+(i+1)+"</span></div>"}).join("")+"</div><div style="font-size:11px;color:var(--text-tertiary);text-align:center;margin-top:20px;">近7周食材消耗（件/周）</div></div>";
+  h+="<div style="background:var(--surface-alt);padding:16px;border-radius:var(--radius);"><h4 style="margin-bottom:8px;">家电能耗（本月）</h4><div style="display:flex;flex-direction:column;gap:8px;">"+[{name:"空调",w:45,c:"128元"},{name:"冰箱",w:30,c:"85元"},{name:"洗衣机",w:15,c:"42元"},{name:"其他",w:10,c:"30元"}].map(function(d){return "<div><span style="font-size:12px;">"+d.name+"</span><div style="background:var(--border-light);border-radius:4px;height:8px;margin-top:4px;"><div style="width:"+d.w+"%;height:100%;background:var(--appliance);border-radius:4px;"></div></div><span style="font-size:10px;color:var(--text-tertiary);">"+d.c+"</span></div>"}).join("")+"</div><div style="font-size:11px;color:var(--text-tertiary);text-align:center;margin-top:6px;">合计：285元（降12% vs 上月）</div></div>";
+  h+="<div style="background:var(--surface-alt);padding:16px;border-radius:var(--radius);"><h4 style="margin-bottom:8px;">维保周期追踪</h4><div style="display:flex;flex-direction:column;gap:6px;font-size:12px;"><div style="display:flex;justify-content:space-between;"><span>空调滤网</span><span style="color:var(--warning);">30天后到期</span></div><div style="display:flex;justify-content:space-between;"><span>油烟机</span><span style="color:var(--success);">120天后到期</span></div><div style="display:flex;justify-content:space-between;"><span>热水器</span><span style="color:var(--success);">180天后到期</span></div><div style="display:flex;justify-content:space-between;"><span>净水器滤芯</span><span style="color:var(--danger);">今日到期</span></div></div></div>";
+  h+="<div style="background:var(--surface-alt);padding:16px;border-radius:var(--radius);"><h4 style="margin-bottom:8px;">月度消费统计</h4><div style="font-size:28px;font-weight:700;color:var(--primary);">3,280元</div><div style="font-size:11px;color:var(--text-tertiary);">本月家庭消费（含食材、日用品、物业）</div><div style="font-size:11px;color:var(--success);margin-top:4px;">降 420元 vs 上月</div><div style="margin-top:8px;"><button class="modal-btn" onclick="exportReport(&apos;monthly&apos;)" style="width:100%;">导出月度报表</button></div></div>";
+  h+="</div></div><div class="modal-footer"><button class="modal-btn" onclick="this.closest(&apos;.modal-overlay&apos;).remove()">关闭</button></div></div></div>";
+  document.getElementById("modalContainer").innerHTML=h;
+}
+
+function showToast(msg,type){type=type||"info";var c=document.getElementById("toastContainer"),t=document.createElement("div");t.className="toast "+type;t.textContent=msg;c.appendChild(t);setTimeout(function(){t.style.opacity="0";t.style.transform="translateX(100%)";t.style.transition="all .3s ease";setTimeout(function(){t.remove()},300)},2500)}
+function exportReport(type){var nm={fridge:"食材清单",price:"比价报表",monthly:"月度消费报表"};showToast("正在导出"+(nm[type]||"")+"...","info");setTimeout(function(){showToast("报表导出完成，已保存至本地","success")},1000)}
+
+function showNewbieGuide(){
+  var steps=[{target:".sidebar",title:"智能体导航",desc:"左侧列出6个家务智能体，点击切换、右键快捷操作、拖拽排序。绿色角标表示运行中，数字表示待办事项。",position:"right"},{target:".scene-history",title:"场景执行历史",desc:"查看最近自动/手动触发的场景执行记录。按起居、安防、清洁分类。",position:"bottom"},{target:"#fridgeCard",title:"冰箱库存图谱",desc:"食材按保质期分级：红色今日到期、橙色3天内、绿色充足。点击展开查看完整清单。",position:"bottom"},{target:"#priceCard",title:"采购比价清单",desc:"自动对比盒马、永辉、美团买菜价格，标注最优选择。支持历史比价记录查看。",position:"bottom"},{target:".aux-panel",title:"右侧信息面板",desc:"跨Agent任务队列、场景快捷执行、全局AI简报。每个模块可独立折叠，整体面板可一键收起。",position:"left"},{target:".chat-input-area",title:"对话输入区",desc:"支持语音录音、小票拍照识别、快捷指令模板。对话记录本地持久化，支持一键清空上下文。",position:"top"},{target:".kb-bar",title:"记忆检索",desc:"BGE-M3家庭长期记忆检索引擎，支持向量检索+BM25+Reranker。Ctrl+K快捷键打开。",position:"top"}];
+  var cs=0,ov=document.createElement("div");ov.id="guideOverlay";ov.className="guide-overlay";
+  function ss(){
+    if(cs>=steps.length){ov.remove();localStorage.setItem("aol_v5_guided","1");showToast("新手引导完成，祝您使用愉快！","success");return}
+    var s=steps[cs],t=document.querySelector(s.target);if(!t){cs++;ss();return}
+    var ot=ov.querySelector(".guide-tooltip");if(ot)ot.remove();
+    var tp=document.createElement("div");tp.className="guide-tooltip";
+    tp.innerHTML="<div class="guide-step">第 "+(cs+1)+" / "+steps.length+" 步</div><h4>"+s.title+"</h4><p>"+s.desc+"</p><div class="guide-actions"><button class="modal-btn" onclick="document.getElementById(&apos;guideOverlay&apos;).remove();localStorage.setItem(&apos;aol_v5_guided&apos;,&apos;1&apos;)">跳过</button><button class="modal-btn primary" onclick="this.closest(&apos;.guide-overlay&apos;).dispatchEvent(new CustomEvent(&apos;guideNext&apos;))">"+(cs<steps.length-1?"下一步":"完成")+"</button></div>";
+    var ps={right:{left:t.getBoundingClientRect().right+16,top:t.getBoundingClientRect().top},left:{left:t.getBoundingClientRect().left-316,top:t.getBoundingClientRect().top},bottom:{left:t.getBoundingClientRect().left,top:t.getBoundingClientRect().bottom+16},top:{left:t.getBoundingClientRect().left,top:Math.max(60,t.getBoundingClientRect().top-180)}};
+    var p=ps[s.position]||ps.right;tp.style.left=Math.max(16,p.left)+"px";tp.style.top=Math.max(60,Math.min(window.innerHeight-200,p.top))+"px";
+    ov.appendChild(tp);if(!ov.parentNode)document.body.appendChild(ov);
+  }
+  ov.addEventListener("guideNext",function(){cs++;ss()});ss();
+}
+
+document.addEventListener("DOMContentLoaded",function(){init();console.log("家务AI管家 v5.0 三栏多智能体中控台已就绪")});
+</script>
+</body>
+</html>

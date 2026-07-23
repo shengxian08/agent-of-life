@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>家务AI管家</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="topbar">
+        <div class="logo">🏠 家务AI管家 <span class="version-tag">v5.1</span></div>
+        <div class="nav-right">
+            <button class="topbar-btn primary" data-wf="smart_check" title="深度全面检查">深度检测</button>
+            <button class="topbar-btn" data-wf="daily_check" title="今日概览">今日概览</button>
+        </div>
+    </nav>
+    <div class="status-bar">
+        <span class="stat-item clickable" id="statDevices" title="查看所有家电">
+            <span class="stat-dot green"></span><span id="statDevicesText">家电 -- 台</span>
+        </span>
+        <span class="stat-item" id="statTasks">
+            <span class="stat-dot orange"></span><span id="statTasksText">待办 -- 项</span>
+        </span>
+    </div>
+    <div class="main-layout" id="mainLayout">
+        <section class="chat-panel" id="chatPanel">
+            <div class="messages" id="messages">
+              <div class="messages-inner">
+                <div class="welcome-card"><div class="welcome-icon">🏠</div><div class="h2">早上好，有什么可以帮您？</div><p class="welcome-desc">购物清单、膳食规划、家电调度、安防巡检 — 一个管家全搞定</p></div>
+              </div>
+            </div>
+            <div class="quick-chips" id="quickChips"></div>
+            <div class="input-row"><input type="text" id="userInput" placeholder="需要我做什么？" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"><button class="send-btn" onclick="sendMessage()" id="sendBtn">➤</button></div>
+        </section>
+    </div>
+    <script src="/static/app.js"></script>
+</body>
+</html>
