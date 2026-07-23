@@ -16,6 +16,12 @@ data/
 # Environment
 .env
 .env.local
+backend/.env
+
+# Debug/temp files
+backend/_*.json
+backend/_*.txt
+backend/_*.html
 
 # IDE
 .vscode/
