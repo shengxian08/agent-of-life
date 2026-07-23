@@ -194,9 +194,15 @@ function renderMD(t) {
     t += '</tbody></table>';
     return t;
   });
+  // 提取视频卡片 HTML（用注释标记包裹，不受内部嵌套 div 影响）
+  var videoHtml = '';
+  h = h.replace(/<!--VIDEOS-->([\s\S]*?)<!--\/VIDEOS-->/g, function(_, m) {
+    videoHtml += m; return '';
+  });
   h = h.replace(/\n\n/g, '</p><p>');
   h = h.replace(/\n/g, '<br>');
   if (!h.startsWith('<')) h = '<p>' + h + '</p>';
   h = h.replace(/<p>\s*<\/p>/g, '');
-  return h;
+  // 视频卡片追加到末尾，确保 <a> 可点击且不受 <p> 嵌套干扰
+  return h + videoHtml;
 }

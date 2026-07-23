@@ -1,12 +1,13 @@
 """
-Agent 对话路由 v5.2 — 普通 + 流式(SSE) + LangGraph + 追踪 + 反馈
+Agent 对话路由 v5.2 — 普通 + 流式(SSE) + LangGraph + 追踪 + 反馈 + 图片代理
 """
 import json
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from loguru import logger
+import httpx
 
 from ...models.schemas import (
     AgentRequest, AgentResponse, FeedbackRequest, TokenStats, TraceSummary,
@@ -398,3 +399,40 @@ async def get_daily_tokens(user_id: str, days: int = Query(7, ge=1, le=90)):
                 "calls": int(row[3] or 0),
             })
         return {"user_id": user_id, "days": days, "daily": daily}
+
+
+# ================================================================
+# 图片代理 — 解决 B 站封面防盗链（Referrer 限制）
+# ================================================================
+
+@router.get("/proxy-image")
+async def proxy_image(url: str = Query(...)):
+    """代理外部图片，绕过 Referrer 防盗链"""
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "Invalid image URL")
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.bilibili.com/",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                raise HTTPException(404, "Image not found")
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            return Response(
+                content=resp.content,
+                media_type=content_type,
+                headers={
+                    "Cache-Control": "public, max-age=86400",
+                    "Access-Control-Allow-Origin": "*",
+                },
+            )
+    except Exception as e:
+        logger.warning(f"Image proxy failed: {e}")
+        raise HTTPException(502, f"Proxy error: {str(e)[:100]}")

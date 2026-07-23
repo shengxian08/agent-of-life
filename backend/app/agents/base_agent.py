@@ -202,6 +202,7 @@ class BaseAgent:
         tool_calls_log = []
         final_text = ""
         partial_texts = []
+        video_data_list: list[dict] = []
 
         for iteration in range(self.max_iterations):
             iter_start = time.time()
@@ -292,6 +293,15 @@ class BaseAgent:
                         result_str = json.dumps({"error": str(result)}, ensure_ascii=False)
                     else:
                         result_str = result
+                    # 视频工具：当场提取视频数据（不被 300 字符截断影响）
+                    if tool_name == "search_recipe_videos" and "error" not in result_str.lower():
+                        try:
+                            vr = json.loads(result_str)
+                            if vr.get("videos"):
+                                video_data_list.extend(vr["videos"])
+                        except Exception:
+                            pass
+
                     result_summary = result_str[:300]
                     tool_calls_log.append({
                         "tool": tool_name,
@@ -349,6 +359,35 @@ class BaseAgent:
 
         self.history.append(ConversationMessage(role="assistant", content=final_text))
 
+        # ---- 注入视频卡片（数据已在工具调用时提取） ----
+        if video_data_list:
+            cards = ""
+            for v in video_data_list[:3]:
+                title = v.get("title", "")
+                url = v.get("url", "")
+                author = v.get("author", "")
+                duration = v.get("duration", "")
+                plays = v.get("play_count", "")
+                import hashlib
+                hue = int(hashlib.md5(title.encode()).hexdigest()[:4], 16) % 360
+                emojis = ["🍳","🥘","🍖","🔥","🥩","🐟","🍗","🥬","🍜","🍲","🫕","🧑‍🍳"]
+                emoji = emojis[hash(title) % len(emojis)]
+                cards += (
+                    f'<a class="video-card" href="{url}" target="_blank" rel="noopener">'
+                    f'<div class="video-thumb" style="background:linear-gradient(135deg,'
+                    f'hsl({hue},70%,45%),hsl({(hue+40)%360},70%,30%))">'
+                    f'<span class="video-emoji">{emoji}</span>'
+                    f'<span class="video-label">{title[:12]}</span>'
+                    f'<span class="video-duration">{duration}</span>'
+                    f'</div>'
+                    f'<div class="video-meta">'
+                    f'<span class="video-title">{title[:40]}</span>'
+                    f'<span class="video-info">B站 · {author} · {plays}播放</span>'
+                    f'</div>'
+                    f'</a>'
+                )
+            final_text += f'<!--VIDEOS--><div class="video-cards">{cards}</div><!--/VIDEOS-->'
+
         # 动态置信度
         if tool_calls_log:
             success_rate = sum(
@@ -373,6 +412,7 @@ class BaseAgent:
             response=final_text,
             intent="general",
             tool_calls=tool_calls_log,
+            data={"videos": video_data_list} if video_data_list else {},
             confidence=confidence,
         )
 
@@ -473,6 +513,7 @@ class BaseAgent:
             messages.append({"role": h.role, "content": h.content})
 
         full_text = ""
+        video_results: list[dict] = []  # 收集视频搜索结果
         for _ in range(self.max_iterations):
             resp = await self.client.chat.completions.create(
                 model=settings.openai_model,
@@ -519,6 +560,14 @@ class BaseAgent:
                     except json.JSONDecodeError:
                         args = {}
                     tool_result = await self._call_tool(tool_name, args)
+                    # 捕获视频搜索结果
+                    if tool_name == "search_recipe_videos" and "error" not in tool_result.lower():
+                        try:
+                            vr = json.loads(tool_result)
+                            if vr.get("videos"):
+                                video_results.extend(vr["videos"])
+                        except Exception:
+                            pass
                     messages.append({
                         "role": "assistant",
                         "content": None,
@@ -543,6 +592,39 @@ class BaseAgent:
         if not full_text:
             full_text = "处理完成。"
             yield full_text
+
+        # 追加视频卡片
+        if video_results:
+            cards = ""
+            for v in video_results[:3]:
+                thumb = v.get("thumbnail", "")
+                title = v.get("title", "")
+                url = v.get("url", "")
+                author = v.get("author", "")
+                duration = v.get("duration", "")
+                plays = v.get("play_count", "")
+                # 用菜名哈希生成稳定的渐变色 + emoji 封面
+                import hashlib
+                hue = int(hashlib.md5(title.encode()).hexdigest()[:4], 16) % 360
+                emojis = ["🍳","🥘","🍖","🔥","🥩","🐟","🍗","🥬","🍜","🍲","🫕","🧑‍🍳"]
+                emoji = emojis[hash(title) % len(emojis)]
+                cards += (
+                    f'<a class="video-card" href="{url}" target="_blank" rel="noopener">'
+                    f'<div class="video-thumb" style="background:linear-gradient(135deg,'
+                    f'hsl({hue},70%,45%),hsl({(hue+40)%360},70%,30%))">'
+                    f'<span class="video-emoji">{emoji}</span>'
+                    f'<span class="video-label">{title[:12]}</span>'
+                    f'<span class="video-duration">{duration}</span>'
+                    f'</div>'
+                    f'<div class="video-meta">'
+                    f'<span class="video-title">{title[:40]}</span>'
+                    f'<span class="video-info">B站 · {author} · {plays}播放</span>'
+                    f'</div>'
+                    f'</a>'
+                )
+            video_html = f'<!--VIDEOS--><div class="video-cards">{cards}</div><!--/VIDEOS-->'
+            full_text += video_html
+            yield video_html  # 作为最后一个 chunk 推送
 
         self.history.append(ConversationMessage(role="assistant", content=full_text))
 
@@ -593,7 +675,7 @@ def register_all_tools():
         get_weekly_schedule, add_calendar_event,
         find_free_time_slots, schedule_task
     )
-    from ..tools.web_search_tools import web_search
+    from ..tools.web_search_tools import web_search, search_recipe_videos
     from ..tools.security_tools import (
         check_door_status, check_window_status,
         check_camera_feeds, get_security_events,
@@ -711,6 +793,9 @@ def register_all_tools():
         {"type":"object","properties":{"user_id":{"type":"string"},"task_name":{"type":"string"},"target_date":{"type":"string"},"duration_minutes":{"type":"integer"},"preferred_time":{"type":"string"}},"required":["user_id","task_name","target_date","duration_minutes"]})
     ToolRegistry.register("web_search", web_search,
         "搜索互联网获取信息（知识库无结果时的兜底方案）。参数query为搜索关键词，max_results为最大结果数",
+        {"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"]})
+    ToolRegistry.register("search_recipe_videos", search_recipe_videos,
+        "在B站搜索烹饪教学视频。当用户询问某道菜怎么做时使用，返回视频链接、封面、时长、播放量、作者。参数query为菜名+做法，如'红烧肉做法'",
         {"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"]})
 
     # 知识库检索工具

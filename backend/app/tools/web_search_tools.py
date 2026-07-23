@@ -63,3 +63,76 @@ async def web_search(query: str, max_results: int = 5) -> dict:
             for r in results[:max_results]
         ],
     }
+
+
+# ================================================================
+# 视频搜索 — Bilibili API（公开、免 Key、中文烹饪教程最全）
+# ================================================================
+
+def _fmt_count(n: int) -> str:
+    """格式化播放量: 12345 → 1.2万"""
+    if n >= 10000:
+        return f"{n/10000:.1f}万"
+    return str(n)
+
+
+async def search_recipe_videos(query: str, max_results: int = 3) -> dict:
+    """在 B 站搜索烹饪教学视频，返回视频卡片数据"""
+    import urllib.parse
+    keyword = urllib.parse.quote(query)
+    url = (
+        f"https://api.bilibili.com/x/web-interface/search/type"
+        f"?search_type=video&keyword={keyword}&page=1"
+    )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.bilibili.com/",
+        "Accept": "application/json, text/plain, */*",
+        "Cookie": "buvid3=agent-of-life",
+    }
+
+    try:
+        import httpx
+    except ImportError:
+        return {"error": "httpx not installed", "videos": []}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                return {"error": f"Bilibili API {resp.status_code}", "videos": []}
+            data = resp.json()
+    except Exception as e:
+        logger.warning(f"Bilibili search failed: {e}")
+        return {"error": str(e)[:200], "videos": []}
+
+    results = data.get("data", {}).get("result", [])
+    if not results:
+        return {"message": "未找到相关视频", "videos": []}
+
+    videos = []
+    for v in results[:max_results]:
+        title = (
+            v.get("title", "")
+            .replace('<em class="keyword">', "")
+            .replace("</em>", "")
+        )
+        videos.append({
+            "title": title,
+            "url": f"https://www.bilibili.com/video/{v.get('bvid', '')}",
+            "thumbnail": v.get("pic", ""),
+            "duration": v.get("duration", ""),
+            "play_count": _fmt_count(v.get("play", 0)),
+            "author": v.get("author", ""),
+            "platform": "B站",
+        })
+
+    return {
+        "platform": "B站",
+        "query": query,
+        "videos": videos,
+    }
