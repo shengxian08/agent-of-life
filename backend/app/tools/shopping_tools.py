@@ -57,10 +57,19 @@ async def generate_shopping_list(user_id: str, meal_plan: dict[str, Any] | None 
     # 2. 菜谱需求
     if meal_plan:
         needed: dict[str, float] = {}
-        for day_meals in meal_plan.get("meals", {}).values():
-            for meal in day_meals:
+        meals_data = meal_plan.get("meals", {})
+        # 兼容两种格式: {"日": [菜]} 或 [菜列表]
+        if isinstance(meals_data, dict):
+            all_meals = [m for day_list in meals_data.values() for m in (day_list or [])]
+        elif isinstance(meals_data, list):
+            all_meals = meals_data
+        else:
+            all_meals = []
+        for meal in all_meals:
+            if isinstance(meal, dict):
                 for ing in meal.get("ingredients_required", []):
-                    needed[ing["name"]] = needed.get(ing["name"], 0) + ing.get("quantity", 0)
+                    if isinstance(ing, dict):
+                        needed[ing.get("name", "")] = needed.get(ing.get("name", ""), 0) + ing.get("quantity", 0)
         fridge_names = {f["name"]: f["quantity"] for f in fridge}
         for name, need in needed.items():
             have = fridge_names.get(name, 0)
