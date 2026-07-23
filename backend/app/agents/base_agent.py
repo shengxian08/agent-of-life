@@ -63,6 +63,19 @@ class ToolRegistry:
         return result
 
 
+def _serialize_tool_result(obj: Any) -> Any:
+    """递归序列化工具返回结果，将 Pydantic 模型转为 dict，确保 JSON 可序列化"""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if isinstance(obj, list):
+        return [_serialize_tool_result(item) for item in obj]
+    if isinstance(obj, dict):
+        return {k: _serialize_tool_result(v) for k, v in obj.items()}
+    if isinstance(obj, (datetime,)):
+        return obj.isoformat()
+    return obj
+
+
 class BaseAgent:
     """ReAct Agent v2 — 改进版 ReAct 循环 + 并行工具调用"""
 
@@ -147,7 +160,8 @@ class BaseAgent:
                 )
                 if hasattr(result, "model_dump"):
                     return json.dumps(result.model_dump(), ensure_ascii=False, default=str)
-                return json.dumps(result, ensure_ascii=False, default=str)
+                # 处理 list/dict 中包含 Pydantic 模型的情况
+                return json.dumps(_serialize_tool_result(result), ensure_ascii=False, default=str)
             except asyncio.TimeoutError:
                 last_error = f"工具 {name} 超时({timeout_seconds}s)"
                 logger.warning(f"{last_error}，第 {attempt + 1}/{max_retries} 次重试")
@@ -178,7 +192,8 @@ class BaseAgent:
             f"{self.system_prompt}\n\n"
             f"当前用户ID: {request.user_id}。当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}。\n"
             f"规则：优先调用工具获取实时数据再回答，同一工具可多次调用（参数不同时）。\n"
-            f"回复格式：口语化中文。禁止面部表情 emoji（😊😂😄等），允许功能性符号（✅❌🔴🟡🟢📅💰）。禁止 Markdown 符号（# | ** `）。"
+            f"回复格式：口语化中文。禁止面部表情 emoji（😊😂😄等），允许功能性符号（✅❌🔴🟡🟢📅💰）。禁止 Markdown 符号（# | ** `）。\n"
+            f"不要生成任何网页链接 URL。如需引导用户去某个平台，只说平台名称即可（如：打开盒马App搜索）。"
         )
         messages = [{"role": "system", "content": full_prompt}]
         for h in self.history[-settings.conversation_history_limit:]:

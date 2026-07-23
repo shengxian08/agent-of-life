@@ -271,7 +271,7 @@ async def compare_supermarket_prices(
     else:
         base_wholesale, base_retail, unit = price_info
 
-    for sm in sm_list:
+    for idx, sm in enumerate(sm_list):
         factor_info = SUPERMARKET_FACTORS.get(sm, {"multiplier": 1.0, "desc": ""})
         multiplier = factor_info["multiplier"]
 
@@ -293,7 +293,6 @@ async def compare_supermarket_prices(
             price=price,
             unit=unit,
             promotion=promo,
-            source_url=f"https://www.{sm.replace('鲜生','').replace('买菜','').replace('超市','')}.com/search?q={item_name}" if sm != "盒马鲜生" else f"https://www.freshhema.com/search?q={item_name}",
             last_updated=datetime.now(),
         ))
 

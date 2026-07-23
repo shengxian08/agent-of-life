@@ -176,7 +176,6 @@ class PriceComparison(BaseModel):
     unit: str
     promotion: str = ""
     last_updated: datetime = Field(default_factory=datetime.now)
-    source_url: str = ""
 
 
 class MaintenanceTask(BaseModel):
