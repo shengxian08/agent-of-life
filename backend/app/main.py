@@ -293,10 +293,6 @@ if os.path.exists(frontend_dir):
     async def serve_profile():
         return FileResponse(os.path.join(frontend_dir, "profile.html"))
 
-    @app.get("/admin")
-    async def serve_admin():
-        return FileResponse(os.path.join(frontend_dir, "admin.html"))
-
     try:
         app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
     except Exception:
