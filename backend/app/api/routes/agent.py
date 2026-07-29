@@ -1,10 +1,11 @@
 """
-Agent 对话路由 v5.2 — 普通 + 流式(SSE) + LangGraph + 追踪 + 反馈 + 图片代理
+Agent 对话路由 v5.2 — 普通 + 流式(SSE) + 追踪 + 反馈 + 图片代理 + 视觉识别
 """
 import json
 import uuid
+import base64
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
 from loguru import logger
 import httpx
@@ -33,48 +34,79 @@ except ImportError:
 
 @router.post("/chat", response_model=AgentResponse)
 async def chat(
-    request: AgentRequest,
+    agent_request: AgentRequest,
     crew: HouseholdCrew = Depends(get_crew),
     memory: ConversationMemory = Depends(get_memory),
     profile_mgr: UserProfileManager = Depends(get_profile_mgr),
+    user_id: str = Depends(get_current_user),
 ):
     """Agent 对话（非流式）"""
-    profile = await profile_mgr.get_profile(request.user_id)
+    # 用 JWT 身份覆盖请求体中的 user_id，防止伪造
+    agent_request.user_id = user_id
+    if not agent_request.session_id or agent_request.session_id == "sess_default":
+        agent_request.session_id = f"sess_{user_id}"
+
+    profile = await profile_mgr.get_profile(agent_request.user_id)
     if profile:
-        request.context["profile"] = profile.model_dump()
+        agent_request.context["profile"] = profile.model_dump()
 
-    response = await crew.chat(request)
+    response = await crew.chat(agent_request)
 
-    # Persist to memory (background)
-    try:
-        await memory.add_message(
-            request.session_id,
-            ConversationMessage(role="user", content=request.message),
-        )
-        await memory.add_message(
-            request.session_id,
-            ConversationMessage(role="assistant", content=response.response),
-        )
-    except Exception as e:
-        logger.warning(f"Memory persist failed: {e}")
+    # Persist to memory (background) — 跳过确认请求，不污染对话历史
+    if not response.requires_confirmation:
+        try:
+            await memory.add_message(
+                agent_request.session_id,
+                ConversationMessage(role="user", content=agent_request.message),
+                user_id=user_id,
+            )
+            await memory.add_message(
+                agent_request.session_id,
+                ConversationMessage(role="assistant", content=response.response),
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.warning(f"Memory persist failed: {e}")
 
     return response
 
 
 @router.post("/chat/stream")
 async def chat_stream(
-    request: AgentRequest,
+    agent_request: AgentRequest,
     crew: HouseholdCrew = Depends(get_crew),
     profile_mgr: UserProfileManager = Depends(get_profile_mgr),
+    user_id: str = Depends(get_current_user),
 ):
     """Agent 流式对话（SSE）"""
-    profile = await profile_mgr.get_profile(request.user_id)
+    # 用 JWT 身份覆盖请求体中的 user_id
+    agent_request.user_id = user_id
+    if not agent_request.session_id or agent_request.session_id == "sess_default":
+        agent_request.session_id = f"sess_{user_id}"
+
+    profile = await profile_mgr.get_profile(agent_request.user_id)
     if profile:
-        request.context["profile"] = profile.model_dump()
+        agent_request.context["profile"] = profile.model_dump()
     async def event_generator():
         try:
-            async for chunk in crew.chat_stream(request):
+            async for chunk in crew.chat_stream(agent_request):
+                # 检查是否为确认事件（流式安全护栏）
+                if isinstance(chunk, str) and chunk.startswith('{'):
+                    try:
+                        data = json.loads(chunk)
+                        if data.get("requires_confirmation"):
+                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                            yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
+                            return
+                    except Exception:
+                        pass
                 yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+            # 视频卡片 HTML 独立于文本流发送（contextvars 隔离，并发安全）
+            from ...agents.base_agent import get_pending_video_html, clear_pending_video_html
+            video_html = get_pending_video_html()
+            if video_html:
+                yield f"data: {json.dumps({'video': video_html}, ensure_ascii=False)}\n\n"
+                clear_pending_video_html()
             yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.error(f"Stream error: {e}")
@@ -83,45 +115,14 @@ async def chat_stream(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@router.post("/chat/graph")
-async def chat_graph(
-    request: AgentRequest,
-    mode: str = Query("langgraph", description="langgraph or crew"),
-):
-    """LangGraph-powered conversation (experimental)"""
-    if mode == "langgraph":
-        try:
-            from ...agents.graph import run_graph
-            result = await run_graph(
-                session_id=request.session_id,
-                user_id=request.user_id,
-                message=request.message,
-                thread_id=request.session_id,
-            )
-            return {
-                "session_id": request.session_id,
-                "response": result.get("response", ""),
-                "intents": result.get("intents", []),
-                "confidence": result.get("confidence", 0.0),
-                "mode": "langgraph",
-            }
-        except Exception as e:
-            logger.error(f"Graph chat failed: {e}")
-            raise HTTPException(500, f"LangGraph error: {str(e)}")
-    else:
-        from ...agents.crew import get_household_crew
-        crew = get_household_crew()
-        return await crew.chat_graph(request)
-
-
 @router.post("/workflow/{workflow_type}")
 async def run_workflow(
     workflow_type: str,
-    user_id: str,
     session_id: str,
     crew: HouseholdCrew = Depends(get_crew),
+    user_id: str = Depends(get_current_user),
 ):
-    """Run predefined workflows with parallel/conditional execution"""
+    """Run predefined workflows — also feeds scheduler for dashboard alerts"""
     valid = ["daily_check", "weekly_plan", "evening_routine", "smart_check", "security_check"]
     if workflow_type not in valid:
         raise HTTPException(400, f"Invalid workflow. Choose: {valid}")
@@ -163,14 +164,6 @@ async def clear_memory(
 @router.get("/health")
 async def health():
     """Agent system health check"""
-    graph_status = "unavailable"
-    try:
-        from ...agents.graph import get_graph_app
-        app = get_graph_app()
-        graph_status = "ready" if app else "unavailable"
-    except Exception:
-        pass
-
     embed_info = {}
     try:
         from ...rag.embeddings import get_embedding_generator
@@ -183,7 +176,6 @@ async def health():
         "service": "家务事务全权代办 Agent v5.2",
         "agents": ["unified"],
         "domains": ["shopping", "meal_plan", "appliance", "maintenance", "security", "household"],
-        "langgraph": graph_status,
         "embedding": embed_info,
     }
 
@@ -402,12 +394,63 @@ async def get_daily_tokens(user_id: str, days: int = Query(7, ge=1, le=90)):
 
 
 # ================================================================
+# 视觉识别 — 图片上传 + AI分析
+# ================================================================
+
+@router.post("/vision/analyze")
+async def analyze_uploaded_image(
+    file: UploadFile = File(...),
+    prompt: str = Form(default=""),
+    crew: HouseholdCrew = Depends(get_crew),
+    user_id: str = Depends(get_current_user),
+):
+    """上传图片，视觉 LLM 分析后自动走 Agent 流程"""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "仅支持图片格式")
+
+    image_bytes = await file.read()
+    if len(image_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(400, "图片最大 10MB")
+
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    from ...tools.vision_tools import analyze_image
+    result = await analyze_image(image_b64, prompt)
+
+    if "error" in result:
+        return {"status": "error", **result}
+
+    # 把识别结果作为用户消息发给 Agent
+    description = result.get("description", "")
+    user_message = f"[用户刚刚上传了一张图片]\n\n图片识别结果：{description}\n\n你只需回复这张图片相关的内容，不要运行每日概览、巡检等其他任务。如果是食材，问用户是否加入冰箱。"
+
+    from ...models.schemas import AgentRequest
+    request = AgentRequest(
+        session_id=f"vision_{uuid.uuid4().hex[:8]}",
+        user_id=user_id,
+        message=user_message,
+        intent="vision",
+    )
+
+    agent_response = await crew.chat(request)
+
+    return {
+        "status": "ok",
+        "vision_description": description,
+        "agent_response": agent_response.response,
+        "tool_calls": agent_response.tool_calls,
+    }
+
+# ================================================================
 # 图片代理 — 解决 B 站封面防盗链（Referrer 限制）
 # ================================================================
 
 @router.get("/proxy-image")
 async def proxy_image(url: str = Query(...)):
     """代理外部图片，绕过 Referrer 防盗链"""
+    # 修复协议相对 URL (B站返回 //i0.hdslb.com/... 格式)
+    if url.startswith("//"):
+        url = "https:" + url
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "Invalid image URL")
 

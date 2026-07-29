@@ -33,7 +33,7 @@ async def kb_stats():
     try:
         if vs.collection:
             count = vs.collection.count()
-            backend = "ChromaDB"
+            backend = "Qdrant"
         elif hasattr(vs, "_fallback_store"):
             count = len(vs._fallback_store)
             backend = "memory"
@@ -133,7 +133,7 @@ async def kb_clear():
     try:
         if vs.collection:
             vs.collection.delete(where={})
-            return {"status": "cleared", "backend": "ChromaDB"}
+            return {"status": "cleared", "backend": "Qdrant"}
     except Exception:
         pass
 

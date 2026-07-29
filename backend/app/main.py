@@ -1,6 +1,6 @@
 """
-Agent of Life — FastAPI Entry Point v4.0
-Upgraded: LangGraph orchestration + BGE-M3 RAG + loguru logging
+Agent of Life — FastAPI Entry Point v5.5
+Self-built ReAct Agent + BGE-M3 Hybrid RAG (4-stage) + loguru logging
 """
 import asyncio
 import sys
@@ -73,11 +73,11 @@ async def lifespan(app: FastAPI):
     """Application lifecycle management"""
     logger.info("=" * 60)
     logger.info(f"  {settings.app_name} v{settings.app_version}")
-    logger.info(f"  Agent: Unified (all 6 domains in one)")
+    logger.info(f"  Agent: Unified (single agent, 40+ tools, all 6 domains)")
     logger.info(f"  LLM: {settings.openai_model} @ {settings.openai_base_url}")
     logger.info(f"  Embedding: {settings.embedding_model_name}")
-    logger.info(f"  RAG: ChromaDB + Hybrid (Dense+Sparse) + Reranker")
-    logger.info(f"  Agent: Semantic Router + LangGraph StateGraph")
+    logger.info(f"  RAG: Qdrant + Hybrid (Dense+BM25+RRF) + BGE-Reranker")
+    logger.info(f"  Engine: Self-built ReAct loop (not LangChain/LangGraph)")
     logger.info("=" * 60)
 
     # Register tools
@@ -95,19 +95,7 @@ async def lifespan(app: FastAPI):
     get_scheduler()
     logger.success("Scheduler started")
 
-    # Startup check
-    asyncio.create_task(_startup_check())
-    logger.info("Startup check triggered (background)")
-
-    # Pre-warm LangGraph (optional)
-    try:
-        from .agents.graph import get_graph_app
-        get_graph_app()
-        logger.success("LangGraph graph compiled")
-    except Exception as e:
-        logger.warning(f"LangGraph not available: {e}")
-
-    # Index recipes into ChromaDB for semantic search (background)
+    # Index recipes into Qdrant for semantic search (background)
     asyncio.create_task(_index_recipes_bg())
     logger.info("Recipe indexing triggered (background)")
 
@@ -119,16 +107,9 @@ async def lifespan(app: FastAPI):
     memory = get_conversation_memory()
     await memory.close()
 
-    # Cleanup LangGraph resources
-    try:
-        from .agents.graph import close_graph
-        close_graph()
-    except Exception:
-        pass
-
 
 async def _index_recipes_bg():
-    """Background task: index recipes + household knowledge into ChromaDB"""
+    """Background task: index recipes + household knowledge into Qdrant"""
     await asyncio.sleep(5)  # 等 BGE-M3 模型加载完
     try:
         from .tools.recipe_tools import index_recipes_to_vectordb, index_knowledge_to_vectordb
@@ -148,31 +129,22 @@ async def _index_recipes_bg():
 
 
 async def _startup_check():
-    """Run initial inspection on startup"""
-    await asyncio.sleep(3)
     try:
         from .services.scheduler_service import get_scheduler
-        scheduler = get_scheduler()
-        result = await scheduler.run_daily_checkup()
-        alerts = result.alerts
-        if alerts:
-            logger.warning(f"Startup check: {len(alerts)} issues found")
-            for alert in alerts:
-                logger.warning(f"  {alert}")
-        else:
-            logger.success("Startup check: all clear")
+        await get_scheduler().run_daily_checkup()
+        logger.success("Startup check complete")
     except Exception as e:
-        logger.error(f"Startup check failed: {e}")
+        logger.warning(f"Startup check skipped: {e}")
 
 
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     description=(
-        "LLM-powered Household AI Agent v5.0 — "
-        "6-Agent Multi-Agent System: Shopping / Meal Planning / Appliance Control / "
-        "Maintenance / Security Monitor / Household Affairs + Automated Workflows. "
-        "Powered by LangGraph + BGE-M3 + Hybrid RAG."
+        "LLM-powered Household AI Agent v5.5 — "
+        "Single Unified Agent with 40+ tools, covering Shopping / Meal Planning / "
+        "Appliance Control / Maintenance / Security / Household Affairs. "
+        "Powered by Self-built ReAct + BGE-M3 + Hybrid RAG (4-stage)."
     ),
     lifespan=lifespan,
 )
@@ -220,16 +192,14 @@ async def root():
         "endpoints": {
             "chat": "/api/v1/agent/chat",
             "chat_stream": "/api/v1/agent/chat/stream",
-            "chat_graph": "/api/v1/agent/chat/graph",
-            "dashboard": "/api/v1/dashboard/status",
             "workflows": "/api/v1/agent/workflow/{type}",
-            "knowledge_search": "/api/v1/knowledge/search",
-            "knowledge_ingest": "/api/v1/knowledge/ingest",
+            "alerts": "/api/v1/dashboard/alerts",
+            "db_tables": "/api/v1/db/tables",
         },
         "tech_stack": {
-            "agent_orchestration": "LangGraph StateGraph + Semantic Router",
-            "rag": "Hybrid Retrieval (Dense+Sparse+RRF) + BGE-M3 + BGE-Reranker",
-            "memory": "Redis + ChromaDB + LLM Consolidation",
+            "agent_architecture": "Self-built ReAct Loop + Function Calling (not LangChain/LangGraph)",
+            "rag": "4-Stage Hybrid Retrieval (Query Rewrite → Dense+BM25 → RRF → BGE-Reranker)",
+            "memory": "Redis + Qdrant + LLM Summarization + Auto Preference Extraction",
             "embedding": settings.embedding_model_name,
         },
     }
@@ -238,10 +208,10 @@ async def root():
 @app.get("/favicon.ico")
 async def favicon():
     import os
-    favicon_path = os.path.join(frontend_dir, "favicon.svg")
+    favicon_path = os.path.join(frontend_dir, "favicon.png")
     if os.path.exists(favicon_path):
         from fastapi.responses import FileResponse
-        return FileResponse(favicon_path, media_type="image/svg+xml")
+        return FileResponse(favicon_path, media_type="image/png")
     return {"detail": "Not Found"}
 
 
@@ -268,30 +238,6 @@ if os.path.exists(frontend_dir):
     @app.get("/app")
     async def serve_frontend():
         return FileResponse(os.path.join(frontend_dir, "index.html"))
-
-    @app.get("/dashboard")
-    async def serve_dashboard():
-        return FileResponse(os.path.join(frontend_dir, "dashboard.html"))
-
-    @app.get("/database")
-    async def serve_database():
-        return FileResponse(os.path.join(frontend_dir, "database.html"))
-
-    @app.get("/recommend")
-    async def serve_recommend():
-        return FileResponse(os.path.join(frontend_dir, "recommend.html"))
-
-    @app.get("/overview")
-    async def serve_overview():
-        return FileResponse(os.path.join(frontend_dir, "overview.html"))
-
-    @app.get("/memory")
-    async def serve_memory():
-        return FileResponse(os.path.join(frontend_dir, "memory.html"))
-
-    @app.get("/profile")
-    async def serve_profile():
-        return FileResponse(os.path.join(frontend_dir, "profile.html"))
 
     try:
         app.mount("/static", StaticFiles(directory=frontend_dir), name="static")

@@ -3,36 +3,75 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>家务AI管家</title>
+    <title>家务 AI 管家</title>
+    <link rel="icon" type="image/png" href="/static/favicon.png">
     <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
 </head>
 <body>
     <nav class="topbar">
-        <div class="logo">🏠 家务AI管家 <span class="version-tag">v5.1</span></div>
+        <div class="logo">家务AI管家</div>
         <div class="nav-right">
-            <button class="topbar-btn primary" data-wf="smart_check" title="全屋智能巡检：冰箱库存 · 临期食材 · 账单逾期 · 菜谱推荐 · 维保状态，一站式覆盖家庭事务">深度检测</button>
-            <button class="topbar-btn" data-wf="daily_check" title="冰箱过期警报 · 临期食材菜谱推荐 · 逾期账单与维保提醒">今日概览</button>
+            <button class="topbar-btn primary" data-wf="smart_check" title="全屋巡检：冰箱库存、临期食材、账单逾期、菜谱推荐、维保状态">一键巡检</button>
+            <button class="topbar-btn" data-wf="daily_check" title="冰箱过期警报、临期食材菜谱推荐、逾期账单与维保提醒">今日概览</button>
+            <span id="userDisplay" class="user-display" onclick="showAuthModal()" title="点击登录/切换账号">未登录</span>
         </div>
     </nav>
-    <div class="status-bar">
-        <span class="stat-item clickable" id="statDevices" title="查看所有家电">
-            <span class="stat-dot green"></span><span id="statDevicesText">家电 -- 台</span>
-        </span>
-        <span class="stat-item" id="statTasks">
-            <span class="stat-dot orange"></span><span id="statTasksText">待办 -- 项</span>
-        </span>
+
+    <!-- 登录/注册弹窗 -->
+    <div id="authModal" class="modal-overlay" style="display:none">
+        <div class="modal-card">
+            <div class="modal-tabs">
+                <span id="tabLogin" class="modal-tab active" onclick="switchAuthTab('login')">登录</span>
+                <span id="tabRegister" class="modal-tab" onclick="switchAuthTab('register')">注册</span>
+            </div>
+            <form id="loginForm" onsubmit="handleLogin(event)" autocomplete="off">
+                <input type="email" id="loginEmail" placeholder="邮箱" required>
+                <input type="password" id="loginPassword" placeholder="密码" required minlength="6">
+                <button type="submit" class="auth-btn">登录</button>
+                <p id="loginError" class="auth-error"></p>
+            </form>
+            <form id="registerForm" onsubmit="handleRegister(event)" style="display:none" autocomplete="off">
+                <input type="text" id="regName" placeholder="昵称" required>
+                <input type="email" id="regEmail" placeholder="邮箱" required>
+                <input type="password" id="regPassword" placeholder="密码（至少6位）" required minlength="6">
+                <div class="captcha-row">
+                    <img id="regCaptchaImg" class="captcha-img" src="" alt="验证码" onclick="refreshCaptcha()" title="点击刷新">
+                    <input type="text" id="regCaptchaAnswer" placeholder="输入验证码" required style="flex:1;margin-bottom:0" autocomplete="off">
+                </div>
+                <button type="submit" class="auth-btn">注册</button>
+                <p id="regError" class="auth-error"></p>
+            </form>
+            <button class="modal-close" onclick="closeAuthModal()">✕</button>
+            <p class="auth-hint" id="authHint">不登录将以游客身份使用，数据不会保存</p>
+        </div>
     </div>
     <div class="main-layout" id="mainLayout">
         <section class="chat-panel" id="chatPanel">
             <div class="messages" id="messages">
               <div class="messages-inner">
-                <div class="welcome-card"><div class="welcome-icon">🏠</div><div class="h2">早上好，有什么可以帮您？</div><p class="welcome-desc">购物清单、膳食规划、家电调度、安防巡检 — 一个管家全搞定</p></div>
+                <div class="welcome-card"><div class="welcome-icon"><img src="/static/ai-avatar.jpg" alt="" class="welcome-avatar"><span id="logoTaskBadge" class="logo-task-badge" style="display:none"></span></div><div class="h2">早上好，有什么可以帮您？</div><p class="welcome-desc">购物清单、膳食规划、家电调度、安防巡检 — 一个管家全搞定</p></div>
               </div>
             </div>
             <div class="quick-chips" id="quickChips"></div>
-            <div class="input-row"><input type="text" id="userInput" placeholder="需要我做什么？" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"><button class="send-btn" onclick="sendMessage()" id="sendBtn">➤</button></div>
+            <div class="input-row"><input type="text" id="userInput" placeholder="需要我做什么？拍照/文字/语音..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}"><input type="file" id="imageInput" accept="image/*" capture="environment" style="display:none" onchange="handleImageUpload(event)"><button class="camera-btn" onclick="document.getElementById('imageInput').click()" title="拍照识别食材／上传图片">+</button><button class="send-btn" onclick="sendMessage()" id="sendBtn">➤</button></div>
         </section>
     </div>
+    <!-- 安全确认弹窗 -->
+    <div id="confirmModal" class="modal-overlay" style="display:none">
+        <div class="modal-card confirm-card">
+            <div class="confirm-icon">⚠️</div>
+            <div class="confirm-title">操作确认</div>
+            <p id="confirmMessage" class="confirm-message">即将执行以下操作，请确认：</p>
+            <div id="confirmDetails" class="confirm-details"></div>
+            <div class="confirm-actions">
+                <button class="confirm-btn cancel" onclick="cancelConfirmation()">取消</button>
+                <button class="confirm-btn approve" id="confirmApproveBtn" onclick="approveConfirmation()">确认执行</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/static/app.js"></script>
 </body>
 </html>

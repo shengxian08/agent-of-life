@@ -1,38 +1,25 @@
 """
-统一家务管家 Agent v5.1 — 合并 6 个 Agent 为一个
+统一家务管家 Agent v5.5 — 合并 6 个 Agent 为一个
 所有工具注册到单一 Agent，由 LLM 自身判断调用哪个工具
+新增：长期记忆检索 (recall_user_memory) + 跨会话记忆感知 + 自动偏好学习
 """
 from .base_agent import BaseAgent
-UNIFIED_PROMPT = """你是"家务AI管家"，全权负责家庭事务。
+UNIFIED_PROMPT = """你是"家务AI管家"，全权负责家庭事务。调用工具时优先并行获取数据再回答。
 
-## 工具调用决策规则（严格按优先级执行）
+## 行为准则
+- 简单寒暄 → 简短介绍自己即可，不要运行巡检或输出报告类内容
+- 用户提及食材信息（"买了/家里有/还剩X斤"等）→ 直接调 add_fridge_item 入库，自动推断单位和保质期，回复中简短确认。不要反问"需要我记录吗"
+- 问菜谱做法 → 同时调 search_recipes + search_recipe_videos，文字步骤只输出一次
+- 问题涉及历史/偏好/过往记录 → 同时调 recall_user_memory + search_knowledge_base
+- 新用户（检查后发现冰箱和家电都空）→ 简短介绍你能做什么，然后逐步了解家庭成员、口味偏好、过敏物、忌口、预算。不要一次性全问
 
-### 第一层：前置判定（命中即执行，不自主思考）
-
-如用户问某道菜"怎么做""做法""教程""视频" → 必须同时调用 search_recipes 和 search_recipe_videos（一次并行调用两个工具）。拿到结果后只生成一次完整回答，禁止分两次回复、禁止重复输出菜谱内容。视频会自动出现在下方，不要在文字中提"视频"二字。
-如用户提到"之前、上次、历史、记得、记录、保存、哪天、什么时候"这类回顾性词汇 → 先调 search_knowledge_base 查家庭知识库。
-如用户提到"现在、此刻、当前、实时、正在、看一下"这类即时性词汇 → 调实时工具（get_fridge_inventory、get_appliance_status 等），不搜知识库。
-若同时命中（如"上次买的鸡蛋现在还能吃吗"）→ 先搜知识库找购买时间，再查冰箱确认当前状态。
-
-### 第二层：未命中时自主判断
-
-你有六方面能力和四类工具：
-
-**实时工具**：get_fridge_inventory / get_appliance_status / check_maintenance_due / check_door_status / check_camera_feeds / get_security_events / track_packages / get_family_schedule / get_weekly_schedule 等
-
-**知识库工具**：search_knowledge_base — BGE-M3 混合检索家庭长期记忆（菜谱做法、维保历史、采购记录、日程存档）
-
-**视频工具**：search_recipe_videos — 在 B 站搜索烹饪教学视频，返回视频链接/封面/时长/作者。当用户询问任何菜的做法时，必须调用此工具。
-
-**无工具**：通用常识问题直接回答
-
-## 回答规则
-- 口语化中文，像管家汇报一样专业简洁
-- 禁止 Markdown 格式（不用 # | ** `），禁止使用面部表情 emoji（如 😊😂😄 等黄色圆脸表情）
-- 允许使用功能性符号（如 ✅ ❌ 🔴 🟡 🟢 📅 💰 等），用空行分隔段落
-- 问菜谱做法时，文字步骤只输出一次。视频教程会自动出现在下方，你在文字末尾最多说一句提示，不要重复输出菜谱
-- 知识库无结果 + 属于家庭私有数据 → 诚实说"暂未找到记录"，不编造
-- 知识库无结果 + 属于通用常识 → 用自身知识回答，标注"未查到家庭存档"
+## 输出规范
+- 口语化中文，Markdown 层级排板：## 标题、**加粗**、1. 步骤编号、- 列表，用空行分隔段落
+- 禁止面部 emoji（😊😂😄），允许功能符号（✅❌🔴🟡🟢📅💰）
+- 回复中不出现"视频"二字，不输出视频名称、作者、时长、播放量、链接
+- 获取到用户长期记忆时自然提及，体现熟悉感
+- 知识库和记忆均无结果 → "暂未找到记录"，不编造
+- 知识库无结果但属通用常识 → 可答，标注"未查到家庭存档"
 - 实时工具无数据 → 如实告知，不猜测"""
 
 class UnifiedAgent(BaseAgent):
@@ -41,11 +28,16 @@ class UnifiedAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             name="unified_household_agent",
-            description="家务AI管家v5.1：购物/膳食/家电/维保/安防/事务，一个Agent全搞定",
+            description="家务AI管家v5.5：购物/膳食/家电/维保/安防/事务/记忆，一个Agent全搞定",
             system_prompt=UNIFIED_PROMPT,
             tools=[
+                # 记忆工具（新增）
+                "recall_user_memory",
                 # 购物工具
                 "get_fridge_inventory",
+                "add_fridge_item",
+                "remove_fridge_item",
+                "record_shopping",
                 "generate_shopping_list",
                 "compare_supermarket_prices",
                 "search_product_prices",
@@ -66,21 +58,26 @@ class UnifiedAgent(BaseAgent):
                 "send_maintenance_reminder",
                 "send_bill_reminder",
                 # 安防工具
-                "check_security_status",
-                "arm_security_system",
-                "disarm_security_system",
                 "check_door_status",
-                "view_camera_snapshot",
+                "check_window_status",
+                "check_camera_feeds",
+                "get_security_events",
+                "set_away_mode",
+                "get_elderly_activity",
                 # 家庭事务工具
-                "check_schedule",
-                "track_package",
-                "add_household_task",
+                "track_packages",
+                "get_community_notices",
+                "get_weekly_schedule",
+                "find_free_time_slots",
+                "schedule_task",
                 "send_notification",
                 # 知识库检索
                 "search_knowledge_base",
                 "web_search",
                 # 视频搜索
                 "search_recipe_videos",
+                # 视觉识别
+                "analyze_image",
             ],
         )
 

@@ -55,7 +55,8 @@ class HybridRetriever:
                     "role": "system",
                     "content": (
                         "你是查询改写助手。将用户问题改写成2-4个不同角度的检索查询，"
-                        "每行一个，用中文。不要编号，不要解释。"
+                        "扩大语义覆盖面。策略：1)同义改写 2)具体化（补全隐含信息）3)抽象化（提取核心概念）。"
+                        "每行一个查询，用中文。不要编号，不要解释，不要加前缀。"
                     ),
                 }, {
                     "role": "user",
@@ -110,15 +111,21 @@ class HybridRetriever:
         if self._bm25_index is not None:
             return
 
-        # 收集所有已索引文档
         all_docs = []
         all_ids = []
+
+        # 从 Qdrant 拉全部文档用于 BM25 倒排索引
         try:
-            if self.vector_store.collection and self.vector_store.collection.count() > 0:
-                data = self.vector_store.collection.get()
-                for doc_id, doc_text in zip(data.get("ids", []), data.get("documents", [])):
-                    all_ids.append(doc_id)
-                    all_docs.append(doc_text)
+            from ..memory.vector_store import _get_qdrant
+            client = _get_qdrant()
+            if client is not None:
+                points, _ = client.scroll(
+                    collection_name=self.vector_store.collection_name,
+                    limit=10000,
+                )
+                for p in points:
+                    all_ids.append(p.id)
+                    all_docs.append(p.payload.get("text", ""))
         except Exception:
             pass
 
@@ -232,7 +239,17 @@ class HybridRetriever:
         self, query: str, candidates: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """BGE-Reranker-v2 精排 (CrossEncoder, 兼容性更好)"""
-        if not candidates or not self.use_rerank:
+        if not candidates:
+            return candidates
+
+        # 无 Reranker 时：归一化 RRF 分数到 0-1 区间
+        if not self.use_rerank:
+            rrf_scores = [c.get("rrf_score", 0) for c in candidates]
+            max_rrf = max(rrf_scores) if rrf_scores else 1.0
+            for i, c in enumerate(candidates):
+                normalized = rrf_scores[i] / max(max_rrf, 0.0001)
+                c["final_score"] = round(normalized, 4)
+            candidates.sort(key=lambda x: x.get("final_score", 0), reverse=True)
             return candidates
 
         try:
@@ -287,17 +304,56 @@ class HybridRetriever:
     # 主检索入口
     # ================================================================
 
+    async def _hyde_generate(self, query: str) -> str:
+        """HyDE: 让 LLM 生成假设答案，用于增强检索召回"""
+        if not settings.retrieval_use_hyde:
+            return ""
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(
+                api_key=settings.api_key,
+                base_url=settings.openai_base_url,
+                timeout=5.0,
+            )
+            resp = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[{
+                    "role": "system",
+                    "content": "你是一个家务知识助手。请用一段话（50-100字）回答用户的问题，"
+                               "即使你不确定答案也要基于常识给出合理回答。这段文字将用于搜索知识库。",
+                }, {
+                    "role": "user",
+                    "content": query,
+                }],
+                temperature=0.3,
+                max_tokens=150,
+            )
+            hypothetical = resp.choices[0].message.content or ""
+            return hypothetical.strip()
+        except Exception as e:
+            logger.debug(f"HyDE generation skipped: {e}")
+            return ""
+
     async def retrieve(
         self, query: str, filters: dict | None = None,
-        min_dense_score: float = 0.45,  # 低于此分数视为不相关
+        min_dense_score: float | None = None,
     ) -> list[dict[str, Any]]:
         """完整的混合检索流水线"""
         if not query.strip():
             return []
 
-        # Phase 1: Query Rewrite
+        # 使用配置的阈值（可在调用时覆盖）
+        _min_dense = min_dense_score if min_dense_score is not None else settings.retrieval_min_dense_score
+
+        # Phase 1: Query Rewrite + HyDE（可选）
         queries = await self._rewrite_query(query)
-        logger.debug(f"Rewritten queries: {queries}")
+
+        # HyDE: 生成假设答案作为额外查询
+        hyde_text = await self._hyde_generate(query)
+        if hyde_text and hyde_text not in queries:
+            queries.append(hyde_text)
+
+        logger.debug(f"Rewritten queries ({len(queries)}): {[q[:50] for q in queries]}")
 
         # Phase 2: Dense + BM25 并行召回
         dense_results, bm25_results = await asyncio.gather(
@@ -325,7 +381,7 @@ class HybridRetriever:
         # Phase 6: 相关度过滤 — 剔除语义不相关的结果
         candidates = [
             c for c in candidates
-            if c.get("dense_score", 0) >= min_dense_score
+            if c.get("dense_score", 0) >= _min_dense
         ]
 
         return candidates[:self.top_k]

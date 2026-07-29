@@ -5,6 +5,7 @@ Agent 基类 v5.2 — ReAct Agent + Function Calling + 全链路追踪 + 重试 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import time
 import uuid
@@ -14,7 +15,7 @@ from typing import Any, Callable, AsyncGenerator
 from openai import AsyncOpenAI
 from loguru import logger
 
-from ..models.schemas import AgentRequest, AgentResponse, ConversationMessage
+from ..models.schemas import AgentRequest, AgentResponse
 from ..config import settings
 
 # Token 价格 (元/百万tokens) — DeepSeek 官方价格
@@ -26,17 +27,38 @@ TOKEN_PRICES = {
     "default": {"prompt": 1.0, "completion": 2.0},
 }
 
+# 请求级视频卡片隔离（contextvars 确保并发请求互不干扰）
+_video_html_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "stream_video_html", default=""
+)
+
+def get_pending_video_html() -> str:
+    """读取当前请求的视频卡片 HTML（供路由层使用）"""
+    return _video_html_var.get()
+
+def clear_pending_video_html() -> None:
+    """清除当前请求的视频卡片 HTML"""
+    _video_html_var.set("")
+
 
 class ToolRegistry:
-    """工具注册表 — 全局单例"""
+    """工具注册表 — 全局单例
+
+    danger_level 说明:
+    - "safe": 纯读取操作，无需确认（如查询库存、检索菜谱）
+    - "caution": 写入操作但不影响安全（如添加食材、创建任务）
+    - "dangerous": 影响物理世界或安全的操作（如开关家电、布防撤防），需要用户确认
+    """
     _tools: dict[str, dict] = {}
 
     @classmethod
-    def register(cls, name: str, func: Callable, description: str, parameters: dict):
+    def register(cls, name: str, func: Callable, description: str, parameters: dict,
+                 danger_level: str = "safe"):
         cls._tools[name] = {
             "function": func,
             "description": description,
             "parameters": parameters,
+            "danger_level": danger_level,
         }
 
     @classmethod
@@ -46,6 +68,11 @@ class ToolRegistry:
     @classmethod
     def get_all(cls) -> dict:
         return cls._tools
+
+    @classmethod
+    def get_danger_level(cls, name: str) -> str:
+        tool = cls._tools.get(name)
+        return tool.get("danger_level", "safe") if tool else "safe"
 
     @classmethod
     def list_tools(cls, names: list[str] | None = None) -> list[dict]:
@@ -90,10 +117,54 @@ class BaseAgent:
         self.description = description
         self.system_prompt = system_prompt
         self.tool_names = tools or []
-        self.history: list[ConversationMessage] = []
         self.max_iterations = settings.agent_max_iterations
         self._client: AsyncOpenAI | None = None
-        self._current_user_id: str = ""
+        # 记忆系统：缓存用户长期记忆，首条消息时自动注入
+        self._memory_injected: set[str] = set()
+        self._last_preference_extraction: dict[str, float] = {}
+
+    def _build_full_prompt(
+        self,
+        user_id: str,
+        profile: dict | None = None,
+        memory_context: str = "",
+    ) -> str:
+        """构建完整 System Prompt — run/run_stream 共享，确保行为一致"""
+        parts = [self.system_prompt, ""]
+
+        # 用户档案
+        if profile:
+            profile_parts = []
+            if profile.get("name"):
+                profile_parts.append(f"用户姓名: {profile['name']}")
+            profile_parts.append(f"家庭成员: {profile.get('family_size', '')}人")
+            if profile.get("dietary_preferences"):
+                profile_parts.append(f"饮食偏好: {', '.join(profile['dietary_preferences'])}")
+            if profile.get("allergies"):
+                profile_parts.append(f"过敏物: {', '.join(profile['allergies'])}")
+            if profile.get("disliked_foods"):
+                profile_parts.append(f"忌口: {', '.join(profile['disliked_foods'])}")
+            if profile.get("budget_monthly"):
+                profile_parts.append(f"月度预算: {profile['budget_monthly']}元")
+            parts.append(f"[用户档案] {' | '.join(profile_parts)}")
+
+        # 基础上下文
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        parts.append(f"用户ID: {user_id} | 当前时间: {now}")
+
+        # 记忆上下文
+        if memory_context:
+            parts.append(f"\n{memory_context}")
+
+        # 行为约束（之前 run() 有但 run_stream() 漏掉的）
+        parts.extend([
+            "",
+            "优先调用工具获取实时数据再回答，同一工具可多次调用（参数不同时）。",
+            "回复：口语化中文，Markdown 层级排板。禁止面部表情 emoji（😊😂😄），允许功能性符号（✅❌🔴🟡🟢📅💰）。",
+            "视频教程链接会自动生成在下方，回复中无需重复输出链接。",
+        ])
+
+        return "\n".join(parts)
 
     @property
     def client(self) -> AsyncOpenAI:
@@ -107,16 +178,31 @@ class BaseAgent:
         return self._client
 
     async def _call_tool(
-        self, name: str, arguments: dict, max_retries: int = 3, timeout_seconds: float = 30.0
+        self, name: str, arguments: dict, user_id: str = "",
+        max_retries: int = 3, timeout_seconds: float = 30.0,
+        confirmed_dangerous: bool = False,
     ) -> str:
-        """调用工具 — 带重试 + 超时"""
+        """调用工具 — 带重试 + 超时 + 安全护栏"""
         tool = ToolRegistry.get(name)
         if not tool:
             return json.dumps({"error": f"工具不存在: {name}"}, ensure_ascii=False)
 
-        # 自动注入 user_id
-        if "user_id" not in arguments and self._current_user_id:
-            arguments["user_id"] = self._current_user_id
+        # ═══════════════════════════════════════════════════════
+        # 安全护栏：危险操作必须先经用户确认
+        # ═══════════════════════════════════════════════════════
+        danger_level = ToolRegistry.get_danger_level(name)
+        if danger_level == "dangerous" and not confirmed_dangerous:
+            return json.dumps({
+                "requires_confirmation": True,
+                "tool": name,
+                "args": arguments,
+                "danger_level": danger_level,
+                "message": f"即将执行高危操作「{name}」，请确认后再执行。"
+            }, ensure_ascii=False)
+
+        # 自动注入 user_id（参数传入，不再依赖实例可变状态）
+        if "user_id" not in arguments and user_id:
+            arguments["user_id"] = user_id
 
         # Pydantic 参数校验（如果工具注册时提供了 schema）
         schema = tool.get("parameters", {})
@@ -177,28 +263,110 @@ class BaseAgent:
 
         return json.dumps({"error": last_error}, ensure_ascii=False)
 
-    async def run(self, request: AgentRequest) -> AgentResponse:
-        """执行 ReAct 循环 — 全链路追踪 + Token 统计"""
-        t_start = time.time()
-        self._current_user_id = request.user_id
-        self.history.append(ConversationMessage(role="user", content=request.message))
+    async def _prepare_context(
+        self, request: AgentRequest
+    ) -> dict[str, Any]:
+        """run/run_stream 共享的准备逻辑：记忆注入、意图路由、Plan-and-Execute、历史加载
 
-        # 追踪记录列表
+        提取这个方法的目的：
+        1. 保证两条路径的行为完全一致
+        2. 新增功能只改一处
+        """
+        user_id = request.user_id
+        session_id = request.session_id
+
+        # 已确认的工具集合（安全护栏用）
+        confirmed_set: set[str] = set()
+        for item in request.confirmed_tools:
+            confirmed_set.add(item.get("tool", ""))
+
+        # 意图路由
+        routed_label = "fallback"
+        try:
+            from .intent_router import get_intent_router
+            intent_label, candidate_tools = await get_intent_router().route(request.message)
+            routed_label = intent_label
+            routed_tools = [t for t in candidate_tools if t in self.tool_names]
+            if len(routed_tools) < 5:
+                routed_tools = self.tool_names
+        except Exception:
+            routed_tools = self.tool_names
+        tools = ToolRegistry.list_tools(routed_tools)
+
+        # 记忆注入
+        memory_context = ""
+        if user_id not in self._memory_injected:
+            self._memory_injected.add(user_id)
+            try:
+                from ..memory.conversation_memory import get_conversation_memory
+                mem = get_conversation_memory()
+                memory_context = await mem.retrieve_user_summary(user_id)
+            except Exception:
+                pass
+
+        # 用户档案 + 构建 system prompt
+        profile = request.context.get("profile")
+        full_prompt = self._build_full_prompt(user_id, profile, memory_context)
+
+        # Plan-and-Execute
+        plan_steps = await self._generate_plan(request.message, memory_context)
+        if plan_steps:
+            plan_text = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(plan_steps))
+            full_prompt += (
+                f"\n\n## 执行计划\n"
+                f"用户的任务已分解为以下步骤，请按顺序逐步执行：\n"
+                f"{plan_text}\n\n"
+                f"每完成一步后再开始下一步，不要跳过。"
+            )
+
+        messages: list[dict[str, Any]] = [{"role": "system", "content": full_prompt}]
+
+        # 历史加载（滑动窗口）
+        MAX_FULL = 5
+        try:
+            from ..memory.conversation_memory import get_conversation_memory
+            mem = get_conversation_memory()
+            history = await mem.get_history(session_id)
+            if len(history) > MAX_FULL:
+                old_text = "\n".join(
+                    f"{'用户' if h.role == 'user' else '助手'}: {h.content[:200]}"
+                    for h in history[:-MAX_FULL][-20:]
+                )
+                summary = await self._summarize_history(old_text)
+                if summary:
+                    messages.append({"role": "system", "content": f"[历史对话摘要] {summary}"})
+            for h in history[-MAX_FULL:]:
+                messages.append({"role": h.role, "content": h.content})
+        except Exception:
+            pass
+        messages.append({"role": "user", "content": request.message})
+
+        logger.debug(
+            f"Context prepared: intent={routed_label} "
+            f"tools={len(tools)}/{len(self.tool_names)} "
+            f"messages={len(messages)} plan={'yes' if plan_steps else 'no'}"
+        )
+
+        return {
+            "user_id": user_id,
+            "session_id": session_id,
+            "messages": messages,
+            "tools": tools,
+            "confirmed_set": confirmed_set,
+        }
+
+    async def run(self, request: AgentRequest) -> AgentResponse:
+        """执行 ReAct 循环 — 全链路追踪 + Token 统计 + 安全确认"""
+        t_start = time.time()
+        ctx = await self._prepare_context(request)
+        user_id = ctx["user_id"]
+        session_id = ctx["session_id"]
+        messages = ctx["messages"]
+        tools = ctx["tools"]
+        confirmed_set = ctx["confirmed_set"]
+
         trace_steps: list[dict] = []
         total_tokens = {"prompt": 0, "completion": 0, "total": 0}
-
-        tools = ToolRegistry.list_tools(self.tool_names)
-        full_prompt = (
-            f"{self.system_prompt}\n\n"
-            f"当前用户ID: {request.user_id}。当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}。\n"
-            f"规则：优先调用工具获取实时数据再回答，同一工具可多次调用（参数不同时）。\n"
-            f"回复格式：口语化中文。禁止面部表情 emoji（😊😂😄等），允许功能性符号（✅❌🔴🟡🟢📅💰）。禁止 Markdown 符号（# | ** `）。\n"
-            f"不要生成任何网页链接 URL。如需引导用户去某个平台，只说平台名称即可（如：打开盒马App搜索）。"
-        )
-        messages = [{"role": "system", "content": full_prompt}]
-        for h in self.history[-settings.conversation_history_limit:]:
-            messages.append({"role": h.role, "content": h.content})
-
         tool_calls_log = []
         final_text = ""
         partial_texts = []
@@ -206,20 +374,31 @@ class BaseAgent:
 
         for iteration in range(self.max_iterations):
             iter_start = time.time()
-            try:
-                resp = await self.client.chat.completions.create(
-                    model=settings.openai_model,
-                    messages=messages,
-                    tools=tools if tools else None,
-                    temperature=settings.llm_temperature,
-                    parallel_tool_calls=settings.agent_parallel_tools,
-                )
-            except Exception as e:
-                logger.error(f"LLM call failed: {e}")
+            # LLM 调用 — 3 次退避重试（应对 API 波动）
+            resp = None
+            last_llm_error = ""
+            for retry in range(3):
+                try:
+                    resp = await self.client.chat.completions.create(
+                        model=settings.openai_model,
+                        messages=messages,
+                        tools=tools if tools else None,
+                        temperature=settings.llm_temperature,
+                        parallel_tool_calls=settings.agent_parallel_tools,
+                    )
+                    break
+                except Exception as e:
+                    last_llm_error = str(e)
+                    if retry < 2:
+                        wait = 0.5 * (retry + 1)
+                        logger.warning(f"LLM call retry {retry+1}/3 after {wait}s: {e}")
+                        await asyncio.sleep(wait)
+            if resp is None:
+                logger.error(f"LLM call failed after 3 retries: {last_llm_error}")
                 final_text = "抱歉，AI 服务暂时不可用，请稍后重试。"
                 trace_steps.append({
                     "iteration": iteration, "step_type": "error",
-                    "detail": {"error": str(e)},
+                    "detail": {"error": last_llm_error},
                     "duration_ms": int((time.time() - iter_start) * 1000),
                 })
                 break
@@ -268,11 +447,13 @@ class BaseAgent:
                     tool_tasks.append((tc, tool_name, args))
 
                 results = await asyncio.gather(
-                    *[self._call_tool(name, args) for _, name, args in tool_tasks],
+                    *[self._call_tool(name, args, user_id,
+                                      confirmed_dangerous=(name in confirmed_set))
+                      for _, name, args in tool_tasks],
                     return_exceptions=True,
                 )
 
-                messages.append({
+                assistant_msg: dict[str, Any] = {
                     "role": "assistant",
                     "content": msg.content or "",
                     "tool_calls": [
@@ -286,13 +467,55 @@ class BaseAgent:
                         }
                         for tc, _, _ in tool_tasks
                     ]
-                })
+                }
+                # DeepSeek thinking 模式：必须回传 reasoning_content
+                if hasattr(msg, "reasoning_content") and msg.reasoning_content:
+                    assistant_msg["reasoning_content"] = msg.reasoning_content
+                messages.append(assistant_msg)
 
                 for (tc, tool_name, args), result in zip(tool_tasks, results):
                     if isinstance(result, Exception):
                         result_str = json.dumps({"error": str(result)}, ensure_ascii=False)
                     else:
                         result_str = result
+
+                    # ═══════════════════════════════════════════════
+                    # 安全护栏检测：工具返回 requires_confirmation
+                    # ═══════════════════════════════════════════════
+                    if "requires_confirmation" in result_str:
+                        try:
+                            confirm_data = json.loads(result_str)
+                            if confirm_data.get("requires_confirmation"):
+                                # 停止 ReAct 循环，返回确认请求给前端
+                                logger.info(
+                                    f"Safety guard: tool '{tool_name}' requires user confirmation"
+                                )
+                                pending_calls = [{
+                                    "tool": tool_name,
+                                    "args": args,
+                                    "message": confirm_data.get("message", f"确认执行 {tool_name}？"),
+                                }]
+                                # 同时检查本轮其他工具是否也需要确认
+                                for (tc2, name2, args2), result2 in zip(tool_tasks, results):
+                                    if (name2, args2.get("action", "")) == (tool_name, args.get("action", "")):
+                                        continue
+                                    # 只收集本轮所有待确认工具（简化处理：只看第一个）
+                                    pass
+
+                                total_duration = int((time.time() - t_start) * 1000)
+                                return AgentResponse(
+                                    session_id=session_id,
+                                    response=confirm_data.get("message",
+                                        f"即将执行高危操作，请确认：{tool_name}"),
+                                    intent=request.intent or "general",
+                                    tool_calls=tool_calls_log,
+                                    confidence=0.95,
+                                    requires_confirmation=True,
+                                    pending_dangerous_calls=pending_calls,
+                                )
+                        except json.JSONDecodeError:
+                            pass  # 不是合法的确认请求，继续正常流程
+
                     # 视频工具：当场提取视频数据（不被 300 字符截断影响）
                     if tool_name == "search_recipe_videos" and "error" not in result_str.lower():
                         try:
@@ -302,7 +525,24 @@ class BaseAgent:
                         except Exception:
                             pass
 
+                    # ═══════════════════════════════════════════════
+                    # 自动修复：工具返回错误时尝试修参重试
+                    # ═══════════════════════════════════════════════
+                    auto_fixed = False
+                    if "error" in result_str.lower():
+                        tool_danger = ToolRegistry.get_danger_level(tool_name)
+                        if tool_danger != "dangerous":
+                            fixed_args, retry_result = await self._auto_fix_and_retry(
+                                tool_name, args, result_str, user_id,
+                            )
+                            if fixed_args is not None:
+                                result_str = retry_result
+                                args = fixed_args
+                                auto_fixed = True
+
                     result_summary = result_str[:300]
+                    if auto_fixed:
+                        result_summary = "[auto-fixed] " + result_summary
                     tool_calls_log.append({
                         "tool": tool_name,
                         "args": args,
@@ -357,36 +597,14 @@ class BaseAgent:
                 "duration_ms": 0,
             })
 
-        self.history.append(ConversationMessage(role="assistant", content=final_text))
+        # ═══════════════════════════════════════════════════════
+        # 自动偏好学习：后台异步提取用户偏好变化（不阻塞响应）
+        # ═══════════════════════════════════════════════════════
+        self._schedule_preference_extraction(user_id, request.message, final_text)
 
         # ---- 注入视频卡片（数据已在工具调用时提取） ----
         if video_data_list:
-            cards = ""
-            for v in video_data_list[:3]:
-                title = v.get("title", "")
-                url = v.get("url", "")
-                author = v.get("author", "")
-                duration = v.get("duration", "")
-                plays = v.get("play_count", "")
-                import hashlib
-                hue = int(hashlib.md5(title.encode()).hexdigest()[:4], 16) % 360
-                emojis = ["🍳","🥘","🍖","🔥","🥩","🐟","🍗","🥬","🍜","🍲","🫕","🧑‍🍳"]
-                emoji = emojis[hash(title) % len(emojis)]
-                cards += (
-                    f'<a class="video-card" href="{url}" target="_blank" rel="noopener">'
-                    f'<div class="video-thumb" style="background:linear-gradient(135deg,'
-                    f'hsl({hue},70%,45%),hsl({(hue+40)%360},70%,30%))">'
-                    f'<span class="video-emoji">{emoji}</span>'
-                    f'<span class="video-label">{title[:12]}</span>'
-                    f'<span class="video-duration">{duration}</span>'
-                    f'</div>'
-                    f'<div class="video-meta">'
-                    f'<span class="video-title">{title[:40]}</span>'
-                    f'<span class="video-info">B站 · {author} · {plays}播放</span>'
-                    f'</div>'
-                    f'</a>'
-                )
-            final_text += f'<!--VIDEOS--><div class="video-cards">{cards}</div><!--/VIDEOS-->'
+            final_text += self._build_video_cards_html(video_data_list)
 
         # 动态置信度
         if tool_calls_log:
@@ -468,70 +686,83 @@ class BaseAgent:
             logger.debug(f"Trace persist skipped: {e}")
 
     async def run_stream(self, request: AgentRequest) -> AsyncGenerator[str, None]:
-        """流式执行 ReAct 循环（含滑动窗口摘要，历史 <= 3000 tokens）"""
-        self._current_user_id = request.user_id
-        self.history.append(ConversationMessage(role="user", content=request.message))
-        tools = ToolRegistry.list_tools(self.tool_names)
-        profile_text = ""
-        profile = request.context.get("profile")
-        if profile:
-            parts = []
-            if profile.get("name"):
-                parts.append(f"用户姓名: {profile['name']}")
-            parts.append(f"家庭成员: {profile.get('family_size', '')}人")
-            if profile.get("dietary_preferences"):
-                parts.append(f"饮食偏好: {', '.join(profile['dietary_preferences'])}")
-            if profile.get("allergies"):
-                parts.append(f"过敏物: {', '.join(profile['allergies'])}")
-            if profile.get("disliked_foods"):
-                parts.append(f"忌口: {', '.join(profile['disliked_foods'])}")
-            if profile.get("budget_monthly"):
-                parts.append(f"月度预算: {profile['budget_monthly']}元")
-            profile_text = " | ".join(parts)
-        full_prompt = (
-            f"{self.system_prompt}\n\n"
-            + (f"[用户档案] {profile_text}\n" if profile_text else "")
-            + f"用户ID: {request.user_id} | {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        )
-        messages = [{"role": "system", "content": full_prompt}]
+        """流式执行 ReAct 循环（含滑动窗口摘要，历史 <= 3000 tokens）
 
-        # 滑动窗口摘要：保留最近 5 轮原文，更早的自动压缩为摘要
-        MAX_FULL = 5  # 保留原文的轮数
-        MAX_HISTORY_TOKENS = 3000
-        if len(self.history) > MAX_FULL:
-            try:
-                old_text = "\n".join(
-                    f"{'用户' if h.role == 'user' else '助手'}: {h.content[:200]}"
-                    for h in self.history[:-MAX_FULL][-20:]
-                )
-                summary = await self._summarize_history(old_text)
-                if summary:
-                    messages.append({"role": "system", "content": f"[历史对话摘要] {summary}"})
-            except Exception:
-                pass
-        for h in self.history[-MAX_FULL:]:
-            messages.append({"role": h.role, "content": h.content})
+        关键：LLM 在调工具前的"思考文本"不会被 yield——只有最终回复才会推送给前端。
+        视频卡片 HTML 通过 contextvars 按请求隔离，由路由层以独立 SSE 事件发送。
+
+        与 run() 共享 _prepare_context()，保证准备阶段行为一致。
+        """
+        ctx = await self._prepare_context(request)
+        user_id = ctx["user_id"]
+        session_id = ctx["session_id"]
+        messages = ctx["messages"]
+        tools = ctx["tools"]
+        stream_confirmed_set = ctx["confirmed_set"]
 
         full_text = ""
-        video_results: list[dict] = []  # 收集视频搜索结果
-        for _ in range(self.max_iterations):
-            resp = await self.client.chat.completions.create(
-                model=settings.openai_model,
-                messages=messages,
-                tools=tools if tools else None,
-                temperature=settings.llm_temperature,
-                stream=True,
-            )
+        video_results: list[dict] = []
+        _video_html_var.set("")
+        pending_confirmations: list[dict] = []
 
-            chunks = []
+        # ═══════════════════════════════════════════════════════
+        # 追踪变量
+        # ═══════════════════════════════════════════════════════
+        t_start = time.time()
+        trace_steps: list[dict] = []
+        total_tokens = {"prompt": 0, "completion": 0, "total": 0}
+        tool_calls_log: list[dict] = []
+
+        for iteration in range(self.max_iterations):
+            iter_start = time.time()
+            # LLM 流式调用 — 3 次退避重试
+            resp = None
+            last_llm_error = ""
+            for retry_count in range(3):
+                try:
+                    resp = await self.client.chat.completions.create(
+                        model=settings.openai_model,
+                        messages=messages,
+                        tools=tools if tools else None,
+                        temperature=settings.llm_temperature,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    )
+                    break
+                except Exception as e:
+                    last_llm_error = str(e)
+                    if retry_count < 2:
+                        wait = 0.5 * (retry_count + 1)
+                        logger.warning(f"LLM stream retry {retry_count+1}/3 after {wait}s: {e}")
+                        await asyncio.sleep(wait)
+            if resp is None:
+                logger.error(f"LLM stream failed after 3 retries: {last_llm_error}")
+                full_text = "抱歉，AI 服务暂时不可用，请稍后重试。"
+                yield full_text
+                trace_steps.append({
+                    "iteration": iteration, "step_type": "error",
+                    "detail": {"error": last_llm_error},
+                    "duration_ms": int((time.time() - iter_start) * 1000),
+                })
+                break
+
+            content_chunks: list[str] = []  # 缓冲内容——不立即 yield（可能是调工具前的"思考"）
+            reasoning_chunks: list[str] = []  # 收集 reasoning_content
             tool_call_chunks: dict[int, dict] = {}
+            stream_usage = None  # 流式最后的 usage chunk
             async for chunk in resp:
+                # 捕获流式 Token 用量（最后一个 chunk 无 choices 但有 usage）
+                if chunk.usage:
+                    stream_usage = chunk.usage
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if not delta:
                     continue
+                # 捕获 reasoning_content（DeepSeek thinking 模式），必须回传否则 API 报 400
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_chunks.append(delta.reasoning_content)
                 if delta.content:
-                    chunks.append(delta.content)
-                    yield delta.content
+                    content_chunks.append(delta.content)
+                    # 不 yield——等确认这不是"思考"而是最终回复后再推送
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
@@ -545,21 +776,86 @@ class BaseAgent:
                         if tc.id:
                             tool_call_chunks[idx]["id"] = tc.id
 
-            content_text = "".join(chunks)
+            content_text = "".join(content_chunks)
+            reasoning_text = "".join(reasoning_chunks)
+            iter_duration = int((time.time() - iter_start) * 1000)
 
+            # 累计 Token 用量
+            if stream_usage:
+                total_tokens["prompt"] += stream_usage.prompt_tokens or 0
+                total_tokens["completion"] += stream_usage.completion_tokens or 0
+                total_tokens["total"] += stream_usage.total_tokens or 0
+            iter_tokens = {
+                "prompt": stream_usage.prompt_tokens if stream_usage else 0,
+                "completion": stream_usage.completion_tokens if stream_usage else 0,
+            }
+
+            # 纯文本回复（无工具调用）→ 这是最终答案，推送给前端
             if content_text and not tool_call_chunks:
+                trace_steps.append({
+                    "iteration": iteration, "step_type": "final",
+                    "detail": {"response": content_text[:500], "tokens": iter_tokens},
+                    "duration_ms": iter_duration,
+                })
+                yield content_text
                 full_text = content_text
                 break
 
+            # 有工具调用 → 并行执行（与 run() 一致）
             if tool_call_chunks:
-                yield "\n\n"
+                # 追踪 LLM 调用（调工具前）
+                trace_steps.append({
+                    "iteration": iteration, "step_type": "llm_call",
+                    "detail": {
+                        "thought": content_text or "",
+                        "tool_calls_planned": [
+                            {"name": tc["name"], "args": tc["arguments"][:200]}
+                            for tc in tool_call_chunks.values()
+                        ],
+                        "tokens": iter_tokens,
+                    },
+                    "duration_ms": iter_duration,
+                })
+
+                # 收集所有工具调用任务
+                tool_tasks: list[tuple[int, str, dict, str]] = []
                 for idx, tc_data in tool_call_chunks.items():
                     tool_name = tc_data["name"]
                     try:
                         args = json.loads(tc_data["arguments"])
                     except json.JSONDecodeError:
                         args = {}
-                    tool_result = await self._call_tool(tool_name, args)
+                    call_id = tc_data["id"] or f"call_{idx}"
+                    tool_tasks.append((idx, tool_name, args, call_id))
+
+                # 并行执行所有工具
+                results = await asyncio.gather(
+                    *[self._call_tool(name, args, user_id,
+                                      confirmed_dangerous=(name in stream_confirmed_set))
+                      for _, name, args, _ in tool_tasks],
+                    return_exceptions=True,
+                )
+
+                # 处理结果 + 构建消息
+                for (idx, tool_name, args, call_id), tool_result in zip(tool_tasks, results):
+                    if isinstance(tool_result, Exception):
+                        tool_result = json.dumps({"error": str(tool_result)}, ensure_ascii=False)
+
+                    # ═══════════════════════════════════════════════
+                    # 安全护栏检测（流式版本）
+                    # ═══════════════════════════════════════════════
+                    if "requires_confirmation" in str(tool_result):
+                        try:
+                            confirm_data = json.loads(tool_result)
+                            if confirm_data.get("requires_confirmation"):
+                                pending_confirmations.append({
+                                    "tool": tool_name,
+                                    "args": args,
+                                    "message": confirm_data.get("message", f"确认执行 {tool_name}？"),
+                                })
+                                continue  # 不加入消息历史，直接跳过
+                        except json.JSONDecodeError:
+                            pass
                     # 捕获视频搜索结果
                     if tool_name == "search_recipe_videos" and "error" not in tool_result.lower():
                         try:
@@ -568,65 +864,168 @@ class BaseAgent:
                                 video_results.extend(vr["videos"])
                         except Exception:
                             pass
-                    messages.append({
+                    # 自动修复（流式版本）
+                    auto_fixed_stream = False
+                    if "error" in tool_result.lower() and ToolRegistry.get_danger_level(tool_name) != "dangerous":
+                        fixed_args_s, retry_result_s = await self._auto_fix_and_retry(
+                            tool_name, args, tool_result, user_id,
+                        )
+                        if fixed_args_s is not None:
+                            tool_result = retry_result_s
+                            args = fixed_args_s
+                            auto_fixed_stream = True
+
+                    # 追踪工具结果
+                    result_summary = tool_result[:300]
+                    if auto_fixed_stream:
+                        result_summary = "[自动修复] " + result_summary
+                    tool_calls_log.append({
+                        "tool": tool_name,
+                        "args": args,
+                        "result": result_summary,
+                    })
+                    trace_steps.append({
+                        "iteration": iteration, "step_type": "tool_result",
+                        "detail": {
+                            "tool": tool_name,
+                            "args": {k: str(v)[:100] for k, v in args.items()},
+                            "result_summary": result_summary,
+                            "is_error": "error" in result_summary.lower(),
+                        },
+                        "duration_ms": 0,
+                    })
+                    assistant_msg: dict = {
                         "role": "assistant",
                         "content": None,
                         "tool_calls": [{
-                            "id": tc_data["id"] or f"call_{idx}",
+                            "id": call_id,
                             "type": "function",
-                            "function": {"name": tool_name, "arguments": tc_data["arguments"]}
+                            "function": {"name": tool_name, "arguments": tool_call_chunks[idx]["arguments"]}
                         }]
-                    })
+                    }
+                    # DeepSeek thinking 模式：必须回传 reasoning_content，否则 400
+                    if reasoning_text:
+                        assistant_msg["reasoning_content"] = reasoning_text
+                    messages.append(assistant_msg)
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": tc_data["id"] or f"call_{idx}",
+                        "tool_call_id": call_id,
                         "content": tool_result,
                     })
                 continue
 
             if content_text:
+                trace_steps.append({
+                    "iteration": iteration, "step_type": "final",
+                    "detail": {"response": content_text[:500], "tokens": iter_tokens},
+                    "duration_ms": iter_duration,
+                })
                 full_text = content_text
                 break
             break
 
+        # ═══════════════════════════════════════════════════════
+        # 如果有待确认的高危操作，停止正常流程，返回确认请求
+        # ═══════════════════════════════════════════════════════
+        if pending_confirmations:
+            confirm_msg = pending_confirmations[0].get("message", "有操作需要您的确认")
+            yield json.dumps({
+                "requires_confirmation": True,
+                "content": confirm_msg,
+                "pending_dangerous_calls": pending_confirmations,
+            }, ensure_ascii=False)
+            return  # 不继续执行，等待用户确认后重发
+
         if not full_text:
             full_text = "处理完成。"
             yield full_text
+            trace_steps.append({
+                "iteration": -1, "step_type": "final",
+                "detail": {"response": full_text[:500]},
+                "duration_ms": 0,
+            })
 
-        # 追加视频卡片
+        # ---- 持久化追踪记录 + Token 用量（补齐流式路径） ----
+        total_duration = int((time.time() - t_start) * 1000)
+        if tool_calls_log:
+            success_rate = sum(
+                1 for tc in tool_calls_log
+                if "error" not in str(tc.get("result", "")).lower()
+            ) / max(len(tool_calls_log), 1)
+            confidence = round(0.7 + success_rate * 0.25, 2)
+        else:
+            confidence = 0.9
+        await self._persist_trace(
+            request, full_text, request.intent or "general",
+            trace_steps, total_tokens, total_duration, confidence,
+        )
+
+        # 构建视频卡片 HTML（contextvars 隔离，并发安全）
         if video_results:
-            cards = ""
-            for v in video_results[:3]:
-                thumb = v.get("thumbnail", "")
-                title = v.get("title", "")
-                url = v.get("url", "")
-                author = v.get("author", "")
-                duration = v.get("duration", "")
-                plays = v.get("play_count", "")
-                # 用菜名哈希生成稳定的渐变色 + emoji 封面
-                import hashlib
-                hue = int(hashlib.md5(title.encode()).hexdigest()[:4], 16) % 360
-                emojis = ["🍳","🥘","🍖","🔥","🥩","🐟","🍗","🥬","🍜","🍲","🫕","🧑‍🍳"]
-                emoji = emojis[hash(title) % len(emojis)]
-                cards += (
-                    f'<a class="video-card" href="{url}" target="_blank" rel="noopener">'
-                    f'<div class="video-thumb" style="background:linear-gradient(135deg,'
-                    f'hsl({hue},70%,45%),hsl({(hue+40)%360},70%,30%))">'
-                    f'<span class="video-emoji">{emoji}</span>'
-                    f'<span class="video-label">{title[:12]}</span>'
-                    f'<span class="video-duration">{duration}</span>'
-                    f'</div>'
-                    f'<div class="video-meta">'
-                    f'<span class="video-title">{title[:40]}</span>'
-                    f'<span class="video-info">B站 · {author} · {plays}播放</span>'
-                    f'</div>'
-                    f'</a>'
-                )
-            video_html = f'<!--VIDEOS--><div class="video-cards">{cards}</div><!--/VIDEOS-->'
-            full_text += video_html
-            yield video_html  # 作为最后一个 chunk 推送
+            _video_html_var.set(self._build_video_cards_html(video_results))
 
-        self.history.append(ConversationMessage(role="assistant", content=full_text))
+        # 持久化对话历史到 ConversationMemory（流式路由不做持久化，在此补上）
+        try:
+            from ..memory.conversation_memory import get_conversation_memory
+            from ..models.schemas import ConversationMessage
+            mem = get_conversation_memory()
+            await mem.add_message(session_id, ConversationMessage(role="user", content=request.message), user_id=user_id)
+            await mem.add_message(session_id, ConversationMessage(role="assistant", content=full_text), user_id=user_id)
+        except Exception as e:
+            logger.debug(f"Stream memory persist skipped: {e}")
+
+        # ═══════════════════════════════════════════════════════
+        # 自动偏好学习（流式版本）：后台异步提取，不阻塞
+        # ═══════════════════════════════════════════════════════
+        self._schedule_preference_extraction(user_id, request.message, full_text)
+
+    async def _generate_plan(self, user_message: str, context: str = "") -> list[str] | None:
+        """检测复杂任务并生成执行计划
+
+        对包含多个意图的消息（如"检查冰箱库存，规划菜谱，生成购物清单"），
+        LLM 将其分解为有序的子任务列表。简单消息返回 None。
+        """
+        # 快速判断：消息太短或明显单一意图 → 跳过
+        msg = user_message.strip()
+        if len(msg) < 15:
+            return None
+
+        # 多意图关键词检测
+        multi_intent_kw = ["然后", "接着", "再", "同时", "顺便", "还有", "以及",
+                           "之后", "最后", "先", "并", "并且"]
+        if not any(kw in msg for kw in multi_intent_kw):
+            return None
+
+        try:
+            resp = await self.client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[{
+                    "role": "system",
+                    "content": (
+                        "你是任务分解助手。将用户的复杂请求拆成有序的执行步骤。\n"
+                        "每行一个步骤，用中文。不要编号，不要解释，最多5步。\n"
+                        "如果请求很简单（单一步骤），直接输出 NONE。"
+                    ),
+                }, {
+                    "role": "user",
+                    "content": f"用户请求：{msg[:500]}",
+                }],
+                temperature=0,
+                max_tokens=200,
+            )
+            plan_text = (resp.choices[0].message.content or "").strip()
+            if not plan_text or plan_text.upper() == "NONE":
+                return None
+
+            steps = [s.strip() for s in plan_text.split("\n") if s.strip()]
+            if len(steps) <= 1:
+                return None
+
+            logger.info(f"Plan generated: {len(steps)} steps → {steps[:3]}...")
+            return steps[:5]
+        except Exception as e:
+            logger.debug(f"Plan generation skipped: {e}")
+            return None
 
     async def _summarize_history(self, dialog_text: str) -> str:
         """LLM 压缩对话历史（保持 <= 3000 tokens 上限）"""
@@ -647,8 +1046,128 @@ class BaseAgent:
         except Exception:
             return ""
 
+    async def _auto_fix_and_retry(
+        self, tool_name: str, args: dict, error_msg: str, user_id: str,
+    ) -> tuple[dict | None, str]:
+        """自动分析并修复工具参数错误，重试一次
+
+        常见可修复错误：
+        1. appliance_id 不存在 → 尝试从错误信息中提取正确 ID
+        2. 参数类型错误 → 尝试类型转换
+        3. 缺少必需参数 → 尝试从错误信息推断
+
+        Returns:
+            (fixed_args, result_str) 或 (None, original_error)
+        """
+        # 用 LLM 分析错误并生成修复后的参数
+        try:
+            resp = await self.client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[{
+                    "role": "system",
+                    "content": (
+                        "你是参数修复助手。工具调用失败，分析错误原因并输出修复后的 JSON 参数。"
+                        "只输出 JSON，不要解释。如果无法修复输出 {\"unfixable\": true}。"
+                    ),
+                }, {
+                    "role": "user",
+                    "content": (
+                        f"工具名: {tool_name}\n"
+                        f"原参数: {json.dumps(args, ensure_ascii=False)}\n"
+                        f"错误信息: {error_msg[:500]}\n\n"
+                        f"请输出修复后的 JSON 参数:"
+                    ),
+                }],
+                temperature=0,
+                max_tokens=300,
+            )
+            content = resp.choices[0].message.content or "{}"
+            # 清理可能的 markdown 包裹
+            if "```" in content:
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            fixed = json.loads(content.strip())
+
+            if fixed.get("unfixable"):
+                return None, error_msg
+
+            if fixed == args:
+                return None, error_msg  # 没有实质性修改
+
+            # 重试修复后的参数
+            logger.info(f"Auto-fix: {tool_name} args {args} → {fixed}")
+            result_str = await self._call_tool(
+                tool_name, fixed, user_id, max_retries=1, timeout_seconds=15.0,
+            )
+            return fixed, result_str
+        except Exception as e:
+            logger.debug(f"Auto-fix failed: {e}")
+            return None, error_msg
+
+    @staticmethod
+    def _build_video_cards_html(video_list: list[dict]) -> str:
+        """构建视频卡片 HTML（run/run_stream 共享）"""
+        if not video_list:
+            return ""
+        import hashlib
+        from urllib.parse import quote
+        cards = ""
+        for v in video_list[:3]:
+            thumb = v.get("thumbnail", "")
+            title = v.get("title", "")
+            url = v.get("url", "")
+            author = v.get("author", "")
+            duration = v.get("duration", "")
+            plays = v.get("play_count", "")
+            hue = int(hashlib.md5(title.encode()).hexdigest()[:4], 16) % 360
+            # 封面图：优先使用 B 站缩略图（通过代理绕过防盗链），渐变色兜底
+            bg_style = (
+                f'background:url(/api/v1/agent/proxy-image?url={quote(thumb, safe="")}) center/cover no-repeat,'
+                f'linear-gradient(135deg,hsl({hue},70%,45%),hsl({(hue+40)%360},70%,30%))'
+            ) if thumb else (
+                f'background:linear-gradient(135deg,hsl({hue},70%,45%),hsl({(hue+40)%360},70%,30%))'
+            )
+            cards += (
+                f'<a class="video-card" href="{url}" target="_blank" rel="noopener">'
+                f'<div class="video-thumb" style="{bg_style}">'
+                f'<span class="video-duration">{duration}</span>'
+                f'</div>'
+                f'<div class="video-meta">'
+                f'<span class="video-title">{title[:40]}</span>'
+                f'<span class="video-info">B站 · {author} · {plays}播放</span>'
+                f'</div>'
+                f'</a>'
+            )
+        return f'<!--VIDEOS--><div class="video-cards">{cards}</div><!--/VIDEOS-->'
+
     def clear_history(self):
-        self.history.clear()
+        """清除内存中的记忆注入标记（对话历史由 ConversationMemory 按 session 管理）"""
+        self._memory_injected.clear()
+
+    def _schedule_preference_extraction(
+        self, user_id: str, user_message: str, agent_response: str,
+    ):
+        """后台调度偏好提取（防抖：同一用户 10 分钟内不重复提取）"""
+        now = time.time()
+        last = self._last_preference_extraction.get(user_id, 0)
+        if now - last < 600:  # 10 分钟防抖
+            return
+        self._last_preference_extraction[user_id] = now
+
+        dialog = f"用户: {user_message[:500]}\n助手: {agent_response[:500]}"
+        asyncio.create_task(self._extract_preferences_bg(user_id, dialog))
+
+    async def _extract_preferences_bg(self, user_id: str, dialog_text: str):
+        """后台：从对话中提取偏好变化并自动写入用户画像"""
+        try:
+            from ..memory.conversation_memory import get_conversation_memory
+            mem = get_conversation_memory()
+            result = await mem.extract_and_update_preferences(user_id, dialog_text)
+            if result:
+                logger.info(f"Preference auto-updated for {user_id}: {result.get('summary', '')}")
+        except Exception as e:
+            logger.debug(f"Preference extraction background task failed: {e}")
 
 
 # ========== 工具注册 ==========
@@ -682,7 +1201,7 @@ def register_all_tools():
         set_away_mode, get_elderly_activity,
     )
     from ..tools.household_tools import (
-        track_packages, get_community_notices, get_family_schedule,
+        track_packages, get_community_notices, add_tracking,
     )
 
     # Security tools
@@ -700,7 +1219,8 @@ def register_all_tools():
         {"type":"object","properties":{"user_id":{"type":"string"},"limit":{"type":"integer"}},"required":["user_id"]})
     ToolRegistry.register("set_away_mode", set_away_mode,
         "设置离家布防模式：关门窗、设防、关灯、家电节能",
-        {"type":"object","properties":{"user_id":{"type":"string"}},"required":["user_id"]})
+        {"type":"object","properties":{"user_id":{"type":"string"}},"required":["user_id"]},
+        danger_level="dangerous")
     ToolRegistry.register("get_elderly_activity", get_elderly_activity,
         "查看老人活动状态和今日活动规律",
         {"type":"object","properties":{"user_id":{"type":"string"}},"required":["user_id"]})
@@ -709,12 +1229,12 @@ def register_all_tools():
     ToolRegistry.register("track_packages", track_packages,
         "追踪在途快递包裹状态",
         {"type":"object","properties":{"user_id":{"type":"string"}},"required":["user_id"]})
+    ToolRegistry.register("add_tracking", add_tracking,
+        "录入快递单号以便追踪。参数：tracking_id(快递单号)、carrier(快递公司，如顺丰/圆通/中通)、description(可选备注)",
+        {"type":"object","properties":{"user_id":{"type":"string"},"tracking_id":{"type":"string"},"carrier":{"type":"string"},"description":{"type":"string"}},"required":["user_id","tracking_id"]})
     ToolRegistry.register("get_community_notices", get_community_notices,
         "获取社区通知和近期活动",
         {"type":"object","properties":{"user_id":{"type":"string"}},"required":["user_id"]})
-    ToolRegistry.register("get_family_schedule", get_family_schedule,
-        "获取家庭日程总览（所有成员）",
-        {"type":"object","properties":{"user_id":{"type":"string"},"days":{"type":"integer"}},"required":["user_id"]})
 
     ToolRegistry.register("get_fridge_inventory", get_fridge_inventory,
         "查看冰箱里有哪些食材，包括数量、过期日期、存放位置",
@@ -763,7 +1283,8 @@ def register_all_tools():
         {"type":"object","properties":{"user_id":{"type":"string"},"date_str":{"type":"string"}},"required":["user_id"]})
     ToolRegistry.register("control_smart_appliance", control_smart_appliance,
         "控制智能家电开关/暂停/恢复",
-        {"type":"object","properties":{"user_id":{"type":"string"},"appliance_id":{"type":"string"},"action":{"type":"string"}},"required":["user_id","appliance_id","action"]})
+        {"type":"object","properties":{"user_id":{"type":"string"},"appliance_id":{"type":"string"},"action":{"type":"string"}},"required":["user_id","appliance_id","action"]},
+        danger_level="dangerous")
     ToolRegistry.register("check_maintenance_due", check_maintenance_due,
         "检查所有家电的维保到期情况，返回离下次保养还有多少天",
         {"type":"object","properties":{"user_id":{"type":"string"}},"required":["user_id"]})
@@ -775,13 +1296,16 @@ def register_all_tools():
         {"type":"object","properties":{"appliance_type":{"type":"string"},"location":{"type":"string"}},"required":["appliance_type"]})
     ToolRegistry.register("send_maintenance_reminder", send_maintenance_reminder,
         "发送维保提醒通知",
-        {"type":"object","properties":{"user_id":{"type":"string"},"task_id":{"type":"string"},"contact":{"type":"string"}},"required":["user_id","task_id"]})
+        {"type":"object","properties":{"user_id":{"type":"string"},"task_id":{"type":"string"},"contact":{"type":"string"}},"required":["user_id","task_id"]},
+        danger_level="caution")
     ToolRegistry.register("send_notification", send_notification,
         "向用户发送通知（App推送/短信/邮件）",
-        {"type":"object","properties":{"user_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"channel":{"type":"string"},"priority":{"type":"string"}},"required":["user_id","title","body"]})
+        {"type":"object","properties":{"user_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"channel":{"type":"string"},"priority":{"type":"string"}},"required":["user_id","title","body"]},
+        danger_level="caution")
     ToolRegistry.register("send_bill_reminder", send_bill_reminder,
         "检查水电煤物业宽带账单，自动发送缴费提醒",
-        {"type":"object","properties":{"user_id":{"type":"string"}},"required":["user_id"]})
+        {"type":"object","properties":{"user_id":{"type":"string"}},"required":["user_id"]},
+        danger_level="caution")
     ToolRegistry.register("get_weekly_schedule", get_weekly_schedule,
         "查看这一周的日程安排",
         {"type":"object","properties":{"user_id":{"type":"string"},"start_date":{"type":"string"}},"required":["user_id"]})
@@ -798,6 +1322,12 @@ def register_all_tools():
         "在B站搜索烹饪教学视频。当用户询问某道菜怎么做时使用，返回视频链接、封面、时长、播放量、作者。参数query为菜名+做法，如'红烧肉做法'",
         {"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"]})
 
+    # 视觉识别工具
+    from ..tools.vision_tools import analyze_image
+    ToolRegistry.register("analyze_image", analyze_image,
+        "分析图片内容。当用户上传图片（如冰箱照片、食材照片、家电照片）时调用。参数image_base64为图片的base64编码，prompt为可选的分析提示。",
+        {"type":"object","properties":{"image_base64":{"type":"string"},"prompt":{"type":"string"}},"required":["image_base64"]})
+
     # 知识库检索工具
     async def search_knowledge_base(query: str = "", top_k: int = 5):
         """搜索家庭知识库（食材信息、家电维保记录、菜谱做法、家庭日程等）"""
@@ -812,3 +1342,35 @@ def register_all_tools():
     ToolRegistry.register("search_knowledge_base", search_knowledge_base,
         "搜索家庭长期记忆知识库（BGE-M3向量检索+Reranker精排），涵盖食材、菜谱、家电维保记录、家庭日程等。当用户问及历史记录或需要查资料时优先使用",
         {"type":"object","properties":{"query":{"type":"string","description":"搜索关键词或问题"},"top_k":{"type":"integer","description":"返回结果数，默认5"}},"required":["query"]})
+
+    # ═══════════════════════════════════════════════════════════
+    # 记忆系统工具 — recall_user_memory
+    # ═══════════════════════════════════════════════════════════
+    async def recall_user_memory(user_id: str = "", query: str = "", top_k: int = 5):
+        """检索用户跨会话的长期记忆（已固化的对话摘要和偏好）
+
+        与 search_knowledge_base 的区别：
+        - search_knowledge_base 查的是结构化文档（菜谱知识、维保记录）
+        - recall_user_memory 查的是用户历史对话摘要（偏好习惯、说过的事、待办事项）
+
+        当用户提到"上次、之前、我们聊过、你还记得吗、我提到过"等回溯性表述时优先使用。
+        新对话开始时也应该调用一次，了解用户的背景和偏好。
+        """
+        from ..memory.conversation_memory import get_conversation_memory
+        mem = get_conversation_memory()
+        memories = await mem.retrieve_user_memories(
+            user_id=user_id, query=query, top_k=top_k,
+        )
+        if not memories:
+            return {"found": 0, "memories": [],
+                    "hint": "该用户暂无长期记忆，这是第一次对话或旧记忆已过期"}
+        return {
+            "found": len(memories),
+            "memories": [
+                {"text": m["text"][:200], "timestamp": m.get("timestamp", ""), "score": m.get("score", 0)}
+                for m in memories
+            ],
+        }
+    ToolRegistry.register("recall_user_memory", recall_user_memory,
+        "检索用户跨会话长期记忆（历史对话摘要、偏好习惯、待办事项）。当用户说'上次/之前/还记得吗/我们聊过'时优先使用。新对话开始时也应调用，了解用户背景。",
+        {"type":"object","properties":{"user_id":{"type":"string","description":"用户ID"},"query":{"type":"string","description":"要搜索的关键词或问题，留空则返回最近记忆"},"top_k":{"type":"integer","description":"返回记忆条数，默认5"}},"required":["user_id"]})

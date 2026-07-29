@@ -1,5 +1,5 @@
 """
-数据库层 - SQLAlchemy 异步 + SQLite/MySQL v5.2
+数据库层 - SQLAlchemy 异步 + PostgreSQL v5.2
 新增: 用户密码认证、Agent执行追踪、用户反馈
 """
 from __future__ import annotations
@@ -172,6 +172,18 @@ class TokenUsageRecord(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class TrackingNumber(Base):
+    """用户录入的快递单号"""
+    __tablename__ = "tracking_numbers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(64), ForeignKey("users.user_id"), nullable=False, index=True)
+    tracking_id = Column(String(64), nullable=False)
+    carrier = Column(String(32), default="顺丰")
+    description = Column(String(200), default="")
+    created_at = Column(DateTime, default=datetime.now)
+
+
 # ============================================================
 # 异步引擎 & 会话
 # ============================================================
@@ -183,17 +195,8 @@ def _get_engine():
     global _engine, _async_session_maker
     if _engine is None:
         db_url = settings.database_url
-        if "sqlite" in db_url.lower():
-            # 确保 SQLite 文件目录存在
-            import os
-            import re
-            sqlite_path = re.sub(r"sqlite\+aiosqlite:///?", "", db_url, flags=re.IGNORECASE)
-            dir_path = os.path.dirname(sqlite_path)
-            if dir_path:
-                os.makedirs(dir_path, exist_ok=True)
         _engine = create_async_engine(
             db_url, echo=False, future=True,
-            # 连接池配置 (仅对非 SQLite 生效)
             pool_size=10,
             max_overflow=20,
             pool_recycle=3600,

@@ -1,124 +1,98 @@
 """
-向量存储 v4.1 — ChromaDB + BGE-M3 Embedding 统一管道
+向量存储 v5.0 — Qdrant + BGE-M3 Embedding
 
-关键设计：ChromaDB 禁用内置 Embedding，全部由 BGE-M3 预计算。
-入库: chunk文本 → BGE-M3.encode() → 1024d向量 → ChromaDB
-查询: query文本 → BGE-M3.encode() → 1024d向量 → ChromaDB.query(query_embeddings=...)
+设计：Qdrant 纯存储引擎，BGE-M3 预计算所有向量。
+入库: chunk → BGE-M3.encode() → 1024d → Qdrant.upsert
+查询: query → BGE-M3.encode() → 1024d → Qdrant.search
 """
 from __future__ import annotations
 
-from datetime import datetime
+import uuid
 from typing import Any
 
 import numpy as np
-
-try:
-    import chromadb
-    from chromadb.config import Settings as ChromaSettings
-    CHROMA_AVAILABLE = True
-except ImportError:
-    CHROMA_AVAILABLE = False
+from loguru import logger
 
 from ..config import settings
-from loguru import logger
+
+_qdrant_client = None
+
+
+def _get_qdrant():
+    global _qdrant_client
+    if _qdrant_client is None:
+        try:
+            from qdrant_client import QdrantClient
+            _qdrant_client = QdrantClient(url=settings.qdrant_url, timeout=10.0)
+            _qdrant_client.get_collections()
+            logger.info(f"Qdrant connected: {settings.qdrant_url}")
+        except ImportError:
+            logger.warning("qdrant-client not installed. Run: pip install qdrant-client")
+            _qdrant_client = None
+        except Exception as e:
+            logger.warning(f"Qdrant unavailable ({e}), using in-memory fallback")
+            _qdrant_client = None
+    return _qdrant_client
 
 
 class VectorStore:
-    """ChromaDB 向量存储 — 全部使用 BGE-M3 预计算 Embedding
+    """Qdrant 向量存储 — BGE-M3 预计算 Embedding"""
 
-    ChromaDB 被配置为纯存储引擎，不做任何内置编码。
-    """
-
-    def __init__(self, collection_name: str = "household_memory"):
-        self.collection_name = collection_name
-        self.client = None
-        self.collection = None
+    def __init__(self, collection_name: str | None = None):
+        self.collection_name = collection_name or settings.qdrant_collection
+        self._dim = settings.embedding_dim
         self._fallback_store: list[dict] = []
-        self._init_store()
+        self._ensure_collection()
 
-    def _init_store(self):
-        if not CHROMA_AVAILABLE:
+    def _ensure_collection(self):
+        client = _get_qdrant()
+        if client is None:
             return
         try:
-            self.client = chromadb.PersistentClient(
-                path=str(settings.vector_db_dir),
-                settings=ChromaSettings(anonymized_telemetry=False),
-            )
-
-            # 获取或创建 collection — 不再重建，只检查维度兼容性
-            try:
-                existing = self.client.get_collection(
-                    self.collection_name, embedding_function=None
+            from qdrant_client.models import Distance, VectorParams
+            collections = [c.name for c in client.get_collections().collections]
+            if self.collection_name not in collections:
+                client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(size=self._dim, distance=Distance.COSINE),
                 )
-                existing_count = existing.count()
                 logger.info(
-                    f"ChromaDB collection '{self.collection_name}' loaded "
-                    f"({existing_count} docs, cosine space, BGE-M3 {settings.embedding_dim}d)"
+                    f"Qdrant collection '{self.collection_name}' created ({self._dim}d, cosine)"
                 )
-                self.collection = existing
-                return
-            except Exception:
-                pass
-
-            # 首次创建
-            self.collection = self.client.create_collection(
-                name=self.collection_name,
-                metadata={"hnsw:space": "cosine"},
-                embedding_function=None,
-            )
-            logger.info(
-                f"ChromaDB collection '{self.collection_name}' created "
-                f"(cosine space, BGE-M3 {settings.embedding_dim}d, no built-in embedding)"
-            )
+            else:
+                info = client.get_collection(self.collection_name)
+                logger.info(
+                    f"Qdrant collection '{self.collection_name}' loaded ({info.points_count} points, {self._dim}d, cosine)"
+                )
         except Exception as e:
-            logger.warning(f"ChromaDB init failed: {e}, using in-memory fallback")
-            self.collection = None
+            logger.warning(f"Qdrant collection init failed: {e}")
 
-    # ================================================================
-    # 写入：chunk → BGE-M3 → ChromaDB
-    # ================================================================
-
-    async def add(
-        self,
-        texts: list[str],
-        metadatas: list[dict] | None = None,
-        ids: list[str] | None = None,
-        embeddings: list[list[float]] | None = None,
-    ) -> list[str]:
-        """添加文档到向量库
-
-        流程: text → BGE-M3 embed (如未预计算) → ChromaDB.add(embeddings=...)
-
-        Returns:
-            实际使用的 doc ids
-        """
+    async def add(self, texts, metadatas=None, ids=None, embeddings=None):
         if not texts:
             return []
-
         if ids is None:
-            ids = [f"doc_{datetime.now().timestamp():.0f}_{i}" for i in range(len(texts))]
+            ids = [uuid.uuid4().hex[:16] for _ in texts]
         if metadatas is None:
             metadatas = [{}] * len(texts)
-
-        # 如果没有预计算 embedding，用 BGE-M3 实时生成
-        if embeddings is None and self.collection is not None:
+        if embeddings is None:
             embeddings = await self._embed_texts(texts)
-
-        # 写入 ChromaDB（只传 pre-computed embeddings，不让 chromadb 自己编码）
-        if CHROMA_AVAILABLE and self.collection is not None and embeddings is not None:
+        client = _get_qdrant()
+        if client is not None and embeddings:
             try:
-                self.collection.add(
-                    ids=ids,
-                    documents=texts,
-                    metadatas=metadatas,
-                    embeddings=embeddings,
-                )
-                logger.debug(f"Added {len(texts)} docs to ChromaDB (BGE-M3 {settings.embedding_dim}d)")
+                from qdrant_client.models import PointStruct
+                points = [
+                    PointStruct(
+                        id=ids[i] if i < len(ids) else uuid.uuid4().hex[:16],
+                        vector=embeddings[i] if i < len(embeddings) else [0.0] * self._dim,
+                        payload={"text": texts[i] if i < len(texts) else "", **(metadatas[i] if i < len(metadatas) else {})},
+                    )
+                    for i in range(len(texts))
+                ]
+                client.upsert(collection_name=self.collection_name, points=points)
+                logger.debug(f"Qdrant: upserted {len(points)} points")
                 return ids
             except Exception as e:
-                logger.warning(f"ChromaDB add failed, using fallback: {e}")
-
-        # Fallback: 内存存储
+                logger.warning(f"Qdrant upsert failed: {e}")
         for i, text in enumerate(texts):
             self._fallback_store.append({
                 "id": ids[i] if i < len(ids) else f"fb_{len(self._fallback_store)}",
@@ -128,8 +102,7 @@ class VectorStore:
             })
         return ids
 
-    async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
-        """用 BGE-M3 生成 embedding"""
+    async def _embed_texts(self, texts):
         try:
             from ..rag.embeddings import get_embedding_generator
             gen = get_embedding_generator()
@@ -137,49 +110,45 @@ class VectorStore:
             return result.get("dense_vecs", [])
         except Exception as e:
             logger.error(f"BGE-M3 embedding failed: {e}")
-            return [[0.0] * settings.embedding_dim for _ in texts]
+            return [[0.0] * self._dim for _ in texts]
 
-    # ================================================================
-    # 查询：query → BGE-M3 → 向量搜索
-    # ================================================================
-
-    async def search(self, query: str, top_k: int = 20) -> list[dict[str, Any]]:
-        """BGE-M3 向量搜索
-
-        流程: query → BGE-M3.encode() → [1024d] → ChromaDB.query(query_embeddings=...)
-        """
-        # Step 1: 用 BGE-M3 编码查询
+    async def search(self, query, top_k=20):
         query_emb = await self._embed_query(query)
         if query_emb is None:
             return []
-
-        results = []
-
-        # Step 2: ChromaDB 向量搜索（用预计算的 query embedding）
-        if CHROMA_AVAILABLE and self.collection is not None and self.collection.count() > 0:
+        results: list[dict[str, Any]] = []
+        client = _get_qdrant()
+        if client is not None:
             try:
-                resp = self.collection.query(
-                    query_embeddings=[query_emb],    # ← BGE-M3 编码的查询向量
-                    n_results=min(top_k, self.collection.count()),
-                    include=["documents", "metadatas", "distances"],
-                )
-                for doc, meta, dist, doc_id in zip(
-                    resp.get("documents", [[]])[0],
-                    resp.get("metadatas", [[]])[0],
-                    resp.get("distances", [[]])[0],
-                    resp.get("ids", [[]])[0],
-                ):
-                    score = round(max(0.0, 1.0 - dist), 4) if dist else 0.0
-                    results.append({
-                        "id": doc_id,
-                        "text": doc,
-                        "metadata": meta,
-                        "score": score,
-                    })
+                # qdrant-client >= 1.7 uses query_points(), older versions use search()
+                if hasattr(client, 'query_points'):
+                    resp = client.query_points(
+                        collection_name=self.collection_name,
+                        query=query_emb,
+                        limit=top_k,
+                    )
+                    for point in resp.points:
+                        results.append({
+                            "id": str(point.id) if point.id else "",
+                            "text": point.payload.get("text", "") if point.payload else "",
+                            "metadata": {k: v for k, v in (point.payload or {}).items() if k != "text"},
+                            "score": round(point.score, 4) if point.score else 0.0,
+                        })
+                elif hasattr(client, 'search'):
+                    resp = client.search(
+                        collection_name=self.collection_name,
+                        query_vector=query_emb,
+                        limit=top_k,
+                    )
+                    for point in resp:
+                        results.append({
+                            "id": point.id,
+                            "text": point.payload.get("text", ""),
+                            "metadata": {k: v for k, v in point.payload.items() if k != "text"},
+                            "score": round(point.score, 4),
+                        })
             except Exception as e:
-                logger.warning(f"ChromaDB search failed: {e}")
-
-        # Step 3: Fallback 内存搜索（余弦相似度）
+                logger.warning(f"Qdrant search failed: {e}")
         if self._fallback_store:
             for doc in self._fallback_store:
                 if doc.get("embedding"):
@@ -192,12 +161,10 @@ class VectorStore:
                             "metadata": doc.get("metadata", {}),
                             "score": round(sim, 4),
                         })
-
         results.sort(key=lambda x: x.get("score", 0), reverse=True)
         return results[:top_k]
 
-    async def _embed_query(self, query: str) -> list[float] | None:
-        """用 BGE-M3 编码查询文本 → 1024d 向量"""
+    async def _embed_query(self, query):
         try:
             from ..rag.embeddings import get_embedding_generator
             gen = get_embedding_generator()
@@ -206,28 +173,27 @@ class VectorStore:
             logger.error(f"Query embedding failed: {e}")
             return None
 
-    # ================================================================
-    # 管理
-    # ================================================================
-
-    async def delete(self, ids: list[str]) -> None:
-        if CHROMA_AVAILABLE and self.collection:
+    async def delete(self, ids):
+        client = _get_qdrant()
+        if client is not None:
             try:
-                self.collection.delete(ids=ids)
+                from qdrant_client.models import PointIdsList
+                client.delete(collection_name=self.collection_name, points_selector=PointIdsList(points=ids))
                 return
             except Exception:
                 pass
         self._fallback_store = [d for d in self._fallback_store if d["id"] not in ids]
 
     @property
-    def count(self) -> int:
-        chroma_count = 0
-        try:
-            if self.collection:
-                chroma_count = self.collection.count()
-        except Exception:
-            pass
-        return chroma_count + len(self._fallback_store)
+    def count(self):
+        client = _get_qdrant()
+        if client is not None:
+            try:
+                info = client.get_collection(self.collection_name)
+                return info.points_count
+            except Exception:
+                pass
+        return len(self._fallback_store)
 
 
 _vector_store: VectorStore | None = None

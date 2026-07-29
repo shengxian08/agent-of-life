@@ -16,22 +16,24 @@ from ..config import settings
 class RAGChain:
     """RAG 问答引擎 — 检索 → 重排 → LLM 生成 → 自省"""
 
-    RAG_SYSTEM_PROMPT = """你是智能家务助手。严格基于下方提供的【参考信息】回答问题。
+    RAG_SYSTEM_PROMPT = """你是智能家务助手。请基于下方提供的【参考信息】回答用户问题。
 
-规则：
-1. 如果参考信息足够，直接回答并引用 [文档编号]
-2. 如果参考信息不足，诚实说明"根据现有知识库无法确定"，不要编造
-3. 用口语化中文，层次分明，关键信息用换行分隔
-4. 回答末尾可以附上"💡 建议"（仅当信息充分时）"""
+核心规则：
+1. 优先使用参考信息中的内容回答，每个关键事实标注来源 [文档N]
+2. 如果参考信息能部分回答问题 → 回答已有的部分，并标注"关于XX，知识库中暂无详细记录"
+3. 如果参考信息完全无法回答 → 说"知识库中暂无相关记录"，但可以用常识给出参考建议（标注"以下为通用建议，非家庭存档"）
+4. 不要编造参考信息中没有的具体数字（如价格、日期、数量）
+5. 口语化中文，层次分明，关键信息用换行分隔"""
 
     FALLBACK_SYSTEM_PROMPT = """你是智能家务助手。知识库中没有找到与用户问题直接相关的资料。
 
-请用你的知识直接回答用户的问题。规则：
-1. 用口语化中文，像管家聊天一样自然
-2. 如果涉及菜谱做法，给出详细食材和步骤
-3. 如果涉及家电维修，优先建议安全操作和联系专业师傅
-4. 如果不确定，诚实告知并给出建议方向
-5. 回答末尾标注「💡 提示：该回答基于通用知识，如需精确信息建议补充相关知识库」"""
+规则：
+1. 先明确告知用户："知识库中暂无相关记录，以下是根据通用知识的回答"
+2. 用口语化中文，像管家聊天一样自然
+3. 如果涉及菜谱做法，可以给出通用做法
+4. 如果涉及家电维修，优先建议安全操作和联系专业师傅
+5. 如果完全不确定，诚实告知并给出建议方向
+6. 回答末尾标注「💡 提示：该回答基于通用知识，如需精确信息建议补充相关知识库」"""
 
     def __init__(self):
         from .retriever import get_retriever
@@ -58,10 +60,33 @@ class RAGChain:
         enable_reflection: bool = False,
     ) -> dict[str, Any]:
         """标准 RAG 查询（非流式）"""
-        # 1. 检索
-        context = await self.retriever.retrieve_context(question, filters)
+        # 1. 检索（只跑一次完整流水线，context 从结果中自拼）
         sources = await self.retriever.retrieve(question, filters)
         sources_count = len(sources)
+        if sources:
+            parts = []
+            for i, doc in enumerate(sources):
+                text = doc.get("text", "")
+                score = doc.get("final_score", doc.get("rrf_score", 0))
+                parts.append(f"[文档{i+1}](相关度:{score:.2f}) {text}")
+            context = "\n\n---\n\n".join(parts)
+        else:
+            context = ""
+
+        # 检索质量门槛：最高分低于阈值 → 视为无有效结果，走 Fallback
+        LOW_QUALITY_THRESHOLD = 0.15
+        top_score = max(
+            (s.get("final_score", s.get("rrf_score", 0)) for s in sources),
+            default=0,
+        )
+        if sources and top_score < LOW_QUALITY_THRESHOLD:
+            logger.info(
+                f"RAG_LOW_QUALITY: top_score={top_score:.3f} < {LOW_QUALITY_THRESHOLD}, "
+                f"falling back to LLM-only mode"
+            )
+            context = ""
+            sources_count = 0
+            sources = []
 
         if not context:
             # ═══════════════════════════════════════════════
@@ -183,12 +208,19 @@ class RAGChain:
             return None
 
     def _build_prompt(self, question: str, context: str) -> str:
-        return f"""参考信息：
+        return f"""以下是知识库中与用户问题最相关的文档（共 {context.count('[文档')} 条）：
+
+---
 {context}
+---
 
-问题：{question}
+用户问题：{question}
 
-请用中文清晰回答，并在关键事实后标注引用来源如 [文档1]."""
+请严格基于以上文档回答。要求：
+- 只使用文档中明确记载的信息，不推测、不编造、不补充文档中没有的细节
+- 每个关键事实后标注来源如 [文档1]
+- 文档中没有的信息，明确说"知识库未记录"
+- 中文回答，简洁清晰"""
 
     # ================================================================
     # 文档摄入
@@ -218,8 +250,9 @@ class RAGChain:
             meta["source"] = source
         meta["ingested_at"] = datetime.now().isoformat()
 
+        import uuid as _uuid
         ids = [
-            f"rag_{hashlib.md5(c.encode()).hexdigest()[:12]}"
+            str(_uuid.uuid5(_uuid.NAMESPACE_DNS, c))
             for c in chunks
         ]
 

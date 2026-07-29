@@ -1277,6 +1277,9 @@ async def generate_meal_plan(
     """智能生成一周菜谱 — 优先消耗临期食材，营养均衡"""
     if start_date is None:
         start_date = date.today() + timedelta(days=1)
+    elif isinstance(start_date, str):
+        # LLM 传参是字符串，需要解析为 date
+        start_date = date.fromisoformat(start_date)
     end_date = start_date + timedelta(days=days - 1)
 
     fridge_names = [item["name"] for item in fridge_inventory]
@@ -1352,14 +1355,14 @@ async def generate_meal_plan(
 
 
 # ================================================================
-# 菜谱向量化索引 — 启动时索引到 ChromaDB，支持语义搜索
+# 菜谱向量化索引 — 启动时索引到 Qdrant，支持语义搜索
 # ================================================================
 
 _RECIPES_INDEXED = False
 
 
 async def index_recipes_to_vectordb(force: bool = False) -> int:
-    """将所有菜谱文档化后索引到 ChromaDB
+    """将所有菜谱文档化后索引到 Qdrant
 
     每道菜生成一份结构化文本，包含菜名、菜系、食材、做法、标签。
     索引后 BGE-M3 + BM25 混合检索可以直接搜到菜谱。
@@ -1432,7 +1435,7 @@ async def index_recipes_to_vectordb(force: bool = False) -> int:
         result = await embedder.embed_documents(texts)
         embeddings = result.get("dense_vecs", [])
     except Exception:
-        embeddings = None  # 让 ChromaDB 自己处理（可能失败）
+        embeddings = None  # 让 Qdrant 自己处理（可能失败）
 
     # 入库
     await vector_store.add(
@@ -1444,12 +1447,12 @@ async def index_recipes_to_vectordb(force: bool = False) -> int:
 
     _RECIPES_INDEXED = True
     from loguru import logger
-    logger.success(f"Indexed {len(texts)} recipes into ChromaDB (BGE-M3 semantic search ready)")
+    logger.success(f"Indexed {len(texts)} recipes into Qdrant (BGE-M3 semantic search ready)")
     return len(texts)
 
 
 # ================================================================
-# 家电保养知识库 — 启动时索引到 ChromaDB
+# 家电保养知识库 — 启动时索引到 Qdrant
 # ================================================================
 
 HOUSEHOLD_KNOWLEDGE = [
@@ -1574,7 +1577,7 @@ _KNOWLEDGE_INDEXED = False
 
 
 async def index_knowledge_to_vectordb(force: bool = False) -> int:
-    """将家电保养等生活知识索引到 ChromaDB"""
+    """将家电保养等生活知识索引到 Qdrant"""
     global _KNOWLEDGE_INDEXED
     if _KNOWLEDGE_INDEXED and not force:
         return 0
@@ -1628,5 +1631,5 @@ async def index_knowledge_to_vectordb(force: bool = False) -> int:
 
     _KNOWLEDGE_INDEXED = True
     from loguru import logger
-    logger.success(f"Indexed {len(texts)} household knowledge docs into ChromaDB")
+    logger.success(f"Indexed {len(texts)} household knowledge docs into Qdrant")
     return len(texts)

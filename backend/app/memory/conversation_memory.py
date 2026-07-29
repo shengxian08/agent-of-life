@@ -34,6 +34,7 @@ class ConversationMemory:
         # Simple semantic cache: {query_hash: (response, timestamp)}
         self._semantic_cache: dict[str, tuple[str, datetime]] = {}
         self._cache_ttl_seconds = 300  # 5 分钟 TTL
+        self._session_users: dict[str, str] = {}  # session_id → user_id 映射
 
     async def _get_redis(self):
         """懒连接 Redis，带重试"""
@@ -62,8 +63,13 @@ class ConversationMemory:
     # 消息写入（双写：内存 + Redis）
     # ================================================================
 
-    async def add_message(self, session_id: str, message: ConversationMessage):
+    async def add_message(self, session_id: str, message: ConversationMessage,
+                          user_id: str = ""):
         """添加对话消息 — 内存 + Redis 双写"""
+        # 记录 session → user 映射（用于记忆固化时关联用户）
+        if user_id:
+            self._session_users[session_id] = user_id
+
         # 内存写入
         self._memory[session_id].append(message)
         if len(self._memory[session_id]) > self.max_history:
@@ -159,7 +165,8 @@ class ConversationMemory:
             except Exception:
                 pass
 
-        await self.summarize_and_store(session_id, "")
+        user_id = self._session_users.get(session_id, "")
+        await self.summarize_and_store(session_id, user_id)
 
     async def summarize_and_store(self, session_id: str, user_id: str):
         """使用 LLM 总结对话并存入长期向量记忆"""
@@ -239,15 +246,155 @@ class ConversationMemory:
     async def search_memory(
         self, query: str, user_id: str = "", top_k: int = 5
     ) -> list[str]:
-        """搜索相关的长期记忆"""
+        """搜索相关的长期记忆（按 user_id 隔离）"""
         vs = get_vector_store()
-        results = await vs.search(query, top_k=top_k)
-        return [
-            r.get("text", "") for r in results
-            if r.get("metadata", {}).get("type") in (
-                "memory_consolidation", "conversation_summary"
+        results = await vs.search(query, top_k=top_k * 2)  # 多召回一些，过滤后可能不够
+        filtered = []
+        for r in results:
+            meta = r.get("metadata", {})
+            # 类型过滤
+            if meta.get("type") not in ("memory_consolidation", "conversation_summary"):
+                continue
+            # user_id 过滤（与 retrieve_user_memories 一致）
+            mem_user_id = meta.get("user_id", "")
+            if user_id and mem_user_id and mem_user_id != user_id:
+                if user_id not in meta.get("session_id", ""):
+                    continue
+            filtered.append(r.get("text", ""))
+            if len(filtered) >= top_k:
+                break
+        return filtered
+
+    async def retrieve_user_memories(
+        self, user_id: str, query: str = "", top_k: int = 10
+    ) -> list[dict[str, Any]]:
+        """检索用户所有跨会话的长期记忆（按相关度排序）
+
+        这是记忆系统被 Agent 调用的主入口。搜索该用户所有已固化的对话摘要，
+        支持按 query 做语义搜索，query 为空时返回最近记忆。
+        """
+        vs = get_vector_store()
+        search_query = query or f"用户偏好 重要事实 待办事项 {user_id}"
+        results = await vs.search(search_query, top_k=top_k)
+
+        memories = []
+        for r in results:
+            meta = r.get("metadata", {})
+            mem_user_id = meta.get("user_id", "")
+            mem_type = meta.get("type", "")
+
+            # 匹配该用户的记忆（或 session_id 包含 user_id）
+            if mem_user_id == user_id or user_id in meta.get("session_id", ""):
+                memories.append({
+                    "text": r.get("text", ""),
+                    "score": r.get("score", 0),
+                    "timestamp": meta.get("timestamp", ""),
+                    "session_id": meta.get("session_id", ""),
+                    "type": mem_type,
+                })
+
+        # 按分数降序，分数相同时按时间降序
+        memories.sort(key=lambda m: (m["score"], m.get("timestamp", "")), reverse=True)
+        return memories[:top_k]
+
+    async def retrieve_user_summary(self, user_id: str) -> str:
+        """生成用户记忆总览（Agent 启动时注入 system prompt）"""
+        memories = await self.retrieve_user_memories(user_id, top_k=8)
+        if not memories:
+            return ""
+
+        lines = ["## 用户长期记忆（跨会话）"]
+        for i, m in enumerate(memories):
+            text = m["text"][:200]  # 每条摘要截断
+            ts = m.get("timestamp", "")[:10] if m.get("timestamp") else "未知"
+            lines.append(f"{i+1}. [{ts}] {text}")
+
+        return "\n".join(lines)
+
+    async def extract_and_update_preferences(
+        self, user_id: str, dialog_text: str,
+    ) -> dict[str, Any] | None:
+        """从对话中自动提取偏好变化并写回用户画像
+
+        用 LLM 分析对话，检测用户是否表达了新的口味偏好、过敏物、忌口、
+        预算偏好等。如果检测到变化，自动调用 UserProfileManager 更新。
+        """
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(
+                api_key=settings.api_key,
+                base_url=settings.openai_base_url,
+                timeout=10.0,
             )
-        ]
+            resp = await client.chat.completions.create(
+                model=settings.openai_model,
+                messages=[{
+                    "role": "system",
+                    "content": (
+                        "你是用户偏好提取助手。分析以下对话，提取用户表达的新偏好变化。\n"
+                        "只提取明确表达了'改变/现在/已经/最近/不'等变化信号的内容，不要提取既有的静态描述。\n"
+                        "返回 JSON 格式，没有变化时返回空对象 {}：\n"
+                        '{\n'
+                        '  "preferences": ["新增的口味偏好"],\n'
+                        '  "allergies": ["新增的过敏物"],\n'
+                        '  "disliked": ["新增的忌口"],\n'
+                        '  "budget": 金额或null,\n'
+                        '  "summary": "一句话总结变化"\n'
+                        '}'
+                    ),
+                }, {
+                    "role": "user",
+                    "content": dialog_text[:2000],
+                }],
+                temperature=0.1,
+                max_tokens=300,
+            )
+            content = resp.choices[0].message.content or "{}"
+
+            # 尽量提取 JSON
+            import json
+            # 处理可能的 markdown 包裹
+            if "```" in content:
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            result = json.loads(content.strip())
+
+            if not result or not isinstance(result, dict):
+                return None
+
+            # 检查是否有实际变化
+            has_change = any([
+                result.get("preferences"),
+                result.get("allergies"),
+                result.get("disliked"),
+                result.get("budget"),
+            ])
+            if not has_change:
+                return None
+
+            # 写回用户画像
+            if any([result.get("preferences"), result.get("allergies"), result.get("disliked")]):
+                from .user_profile import get_profile_manager
+                pm = get_profile_manager()
+                await pm.update_preferences(
+                    user_id=user_id,
+                    preferences=result.get("preferences"),
+                    allergies=result.get("allergies"),
+                    disliked=result.get("disliked"),
+                )
+
+            logger.info(
+                f"Auto preference update for {user_id}: {result.get('summary', 'changes detected')}"
+            )
+            return result
+
+        except json.JSONDecodeError:
+            logger.debug(f"Preference extraction: LLM returned non-JSON: {content[:100]}")
+            return None
+        except Exception as e:
+            logger.debug(f"Preference extraction failed: {e}")
+            return None
 
     # ================================================================
     # Semantic Cache (basic, for frequently repeated queries)

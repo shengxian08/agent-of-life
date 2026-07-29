@@ -1,0 +1,38 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+
+# Git
+.git
+.gitignore
+
+# Docs
+*.md
+
+# Env & Config
+.env
+
+# Database
+*.db
+
+# 模型文件太大（8GB+），由 volume 挂载提供，不打包进镜像
+backend/data/
+
+# Node
+node_modules
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+_smart.json
+_write_graph.py
+_kb_view.py

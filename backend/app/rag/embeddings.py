@@ -58,12 +58,12 @@ class EmbeddingGenerator:
 
             self._ensure_hf_cache_on_d_drive()
 
-            # 策略 1: sentence-transformers (缓存优先，已下载则秒加载)
-            if self._try_load_sentence_transformers():
+            # 策略 1: FlagEmbedding (BGE-M3 原生, Dense+Sparse 全套)
+            if self._try_load_flagembedding():
                 return
 
-            # 策略 2: FlagEmbedding (BGE-M3 原生, 功能更全但可能重复下载)
-            if self._try_load_flagembedding():
+            # 策略 2: sentence-transformers (Dense only, 兜底)
+            if self._try_load_sentence_transformers():
                 return
 
             # 策略 3: ONNX 加速模型
@@ -85,11 +85,16 @@ class EmbeddingGenerator:
                 logger.info("Using HF mirror: https://hf-mirror.com (for China)")
 
             from FlagEmbedding import BGEM3FlagModel
-            logger.info(
-                f"Loading BGE-M3 model: {self.model_name} on {self.device}..."
-                f"\n  First load downloads ~2.2GB from hf-mirror.com"
-                f"\n  This may take 2-5 minutes (once only)..."
-            )
+            import os as _os
+            model_exists = _os.path.isdir(self.model_name) or _os.path.isfile(self.model_name)
+            if model_exists:
+                logger.info(f"Loading BGE-M3 model from local cache: {self.model_name} on {self.device}...")
+            else:
+                logger.info(
+                    f"BGE-M3 model not found locally, downloading from hf-mirror.com..."
+                    f"\n  Model: {self.model_name}"
+                    f"\n  Size: ~2.2GB, may take 2-5 minutes (once only)"
+                )
             self._model = BGEM3FlagModel(
                 self.model_name,
                 use_fp16=(self.device != "cpu"),

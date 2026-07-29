@@ -125,12 +125,12 @@ class Recipe(BaseModel):
     name: str
     cuisine: str = ""                    # 菜系
     meal_type: MealType = MealType.DINNER
-    ingredients_required: list[dict[str, Any]] = Field(default_factory=list, max_items=50)
+    ingredients_required: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     cooking_time_minutes: int = Field(default=30, ge=1, le=1440)
     difficulty: int = Field(default=2, ge=1, le=5)
     calories_total: float = Field(default=500.0, ge=0, le=10000)
-    instructions: list[str] = Field(default_factory=list, max_items=30)
-    tags: list[str] = Field(default_factory=list, max_items=10)
+    instructions: list[str] = Field(default_factory=list, max_length=30)
+    tags: list[str] = Field(default_factory=list, max_length=10)
     rating: float = Field(default=4.0, ge=0, le=5)
     image_url: str = ""
 
@@ -207,6 +207,7 @@ class AgentRequest(BaseModel):
     intent: Optional[str] = None  # shopping/meal_plan/appliance/maintenance/security/household/general
     context: dict[str, Any] = Field(default_factory=dict)
     stream: bool = Field(default=False)
+    confirmed_tools: list[dict[str, Any]] = Field(default_factory=list)  # 用户已确认的危险工具调用
 
 
 # ============================================================
@@ -310,6 +311,8 @@ class AgentResponse(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
     confidence: float = Field(default=1.0, ge=0, le=1)
     timestamp: datetime = Field(default_factory=datetime.now)
+    requires_confirmation: bool = Field(default=False)  # 是否有待确认的高危操作
+    pending_dangerous_calls: list[dict[str, Any]] = Field(default_factory=list)  # 待确认的工具调用详情
 
 
 # ============================================================
@@ -329,6 +332,8 @@ class RegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     password: str = Field(..., min_length=6, max_length=128)
     family_size: int = Field(default=1, ge=1, le=20)
+    captcha_id: str = Field(default="")
+    captcha_answer: str = Field(default="")
 
 
 class TokenResponse(BaseModel):

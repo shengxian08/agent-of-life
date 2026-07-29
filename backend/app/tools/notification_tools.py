@@ -89,12 +89,3 @@ async def send_bill_reminder(user_id: str) -> dict[str, Any]:
         "reminders": reminders,
         "total_amount_due": round(sum(r["amount"] for r in reminders), 2) if reminders else 0,
     }
-
-
-async def format_notification_message(
-    template: str, context: dict[str, Any]
-) -> str:
-    """根据模板格式化通知消息"""
-    for key, value in context.items():
-        template = template.replace(f"{{{key}}}", str(value))
-    return template

@@ -15,9 +15,15 @@ class Settings(BaseSettings):
     # === LLM (OpenAI 兼容接口) ===
     openai_api_key: SecretStr = Field(default=SecretStr("sk-xxx"), alias="OPENAI_API_KEY")
     openai_base_url: str = Field(default="https://api.deepseek.com/v1", alias="OPENAI_BASE_URL")
-    openai_model: str = Field(default="deepseek-chat", alias="OPENAI_MODEL")
+    openai_model: str = Field(default="deepseek-v4-pro", alias="OPENAI_MODEL")
     llm_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     llm_max_tokens: int = Field(default=4096, ge=1, le=131072)
+
+    # === Vision LLM (多模态图片识别) ===
+    vision_enabled: bool = Field(default=False, alias="VISION_ENABLED")
+    vision_model: str = Field(default="gpt-4o", alias="VISION_MODEL", description="视觉模型名称")
+    vision_base_url: str = Field(default="", alias="VISION_BASE_URL", description="视觉模型 API 地址，留空则用 openai_base_url")
+    vision_api_key: str = Field(default="", alias="VISION_API_KEY", description="视觉模型 API Key，留空则用 openai_api_key")
 
     # === Embedding (BGE-M3 中文优化) ===
     embedding_model_name: str = Field(
@@ -34,13 +40,15 @@ class Settings(BaseSettings):
         alias="RERANKER_MODEL_NAME",
         description="Cross-encoder 重排序模型"
     )
-    use_reranker: bool = Field(default=True, alias="USE_RERANKER")
+    use_reranker: bool = Field(default=False, alias="USE_RERANKER")
     reranker_top_n: int = Field(default=5, ge=1, le=50)
 
     # === Hybrid Retrieval ===
     hybrid_alpha: float = Field(default=0.7, ge=0.0, le=1.0, description="RRF 融合权重：向量分占比")
     retrieval_top_k: int = Field(default=20, ge=1, le=100, description="初次检索候选数")
     final_top_k: int = Field(default=5, ge=1, le=50, description="最终返回文档数")
+    retrieval_min_dense_score: float = Field(default=0.35, ge=0.0, le=1.0, description="Dense 检索最低相关度阈值，低于此分数剔除")
+    retrieval_use_hyde: bool = Field(default=True, description="是否启用 HyDE 假设文档增强召回")
 
     # === Redis ===
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
@@ -49,12 +57,13 @@ class Settings(BaseSettings):
 
     # === Database ===
     database_url: str = Field(
-        default="sqlite+aiosqlite:///./data/household.db",
+        default="postgresql+asyncpg://postgres:agent2026@localhost:5432/household",
         alias="DATABASE_URL"
     )
 
-    # === ChromaDB ===
-    chroma_persist_dir: str = Field(default="./data/chroma", alias="CHROMA_PERSIST_DIR")
+    # === Qdrant (向量库) ===
+    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
+    qdrant_collection: str = Field(default="household_memory", alias="QDRANT_COLLECTION")
 
     # === LangGraph Checkpointer (SQLite) ===
     checkpoint_db_path: str = Field(
@@ -67,7 +76,7 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000, ge=1, le=65535, alias="APP_PORT")
     app_debug: bool = Field(default=True, alias="APP_DEBUG")
     app_name: str = "家务事务全权代办 Agent"
-    app_version: str = "5.0.0"
+    app_version: str = "5.5.0"
 
     # === Auth (JWT) ===
     jwt_secret: str = Field(default="agent-of-life-secret-change-me", alias="JWT_SECRET")
@@ -92,9 +101,18 @@ class Settings(BaseSettings):
     default_city: str = Field(default="北京")
     default_location: str = Field(default="朝阳区")
 
+    # === External APIs ===
+    kuaidi100_customer: str = Field(default="", alias="KUAIDI100_CUSTOMER",
+                                     description="快递100 企业账号，注册 https://api.kuaidi100.com")
+    kuaidi100_key: str = Field(default="", alias="KUAIDI100_KEY",
+                                description="快递100 API Key")
+
     # === Monitoring ===
     otel_enabled: bool = Field(default=False, alias="OTEL_ENABLED")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+
+    # === Admin ===
+    admin_user_id: str = Field(default="user_001", alias="ADMIN_USER_ID", description="管理员用户ID")
 
     # === Rate Limiting ===
     rate_limit_enabled: bool = Field(default=True, alias="RATE_LIMIT_ENABLED")
@@ -123,7 +141,8 @@ class Settings(BaseSettings):
 
     @property
     def vector_db_dir(self) -> Path:
-        p = Path(self.chroma_persist_dir)
+        """兼容旧接口 — Qdrant 不需要本地目录，保留用于日志"""
+        p = Path("./data/qdrant_snapshots")
         p.mkdir(parents=True, exist_ok=True)
         return p
 
