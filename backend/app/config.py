@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     agent_max_iterations: int = Field(default=10, ge=1, le=50)
     agent_max_tool_calls: int = Field(default=8, ge=1, le=30)
     agent_parallel_tools: bool = Field(default=True, description="是否允许并行工具调用")
+    agent_token_budget: int = Field(default=12000, ge=2000, le=64000, description="单次请求累计 Token 上限，超限强制截断")
     conversation_history_limit: int = Field(default=40, ge=1, le=200)
 
     # === Memory ===

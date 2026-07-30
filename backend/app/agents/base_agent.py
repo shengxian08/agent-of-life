@@ -353,6 +353,7 @@ class BaseAgent:
             "messages": messages,
             "tools": tools,
             "confirmed_set": confirmed_set,
+            "plan_steps_count": len(plan_steps) if plan_steps else 0,
         }
 
     async def run(self, request: AgentRequest) -> AgentResponse:
@@ -372,7 +373,30 @@ class BaseAgent:
         partial_texts = []
         video_data_list: list[dict] = []
 
-        for iteration in range(self.max_iterations):
+        # ====== 动态轮次 + 死循环检测 ======
+        plan_count = ctx.get("plan_steps_count", 0)
+        if plan_count > 1:
+            effective_max = min(plan_count * 3 + 2, self.max_iterations)
+        else:
+            effective_max = 5
+
+        last_tool_sig = ""
+        repeat_count = 0
+        MAX_REPEAT = 2
+        TOKEN_BUDGET = settings.agent_token_budget
+        # ===================================
+
+        for iteration in range(effective_max):
+            # ---- 防线1: Token 预算 ----
+            if total_tokens["total"] > TOKEN_BUDGET:
+                final_text = "当前任务较复杂，已为您完成部分处理。如有需要请继续提问。"
+                trace_steps.append({
+                    "iteration": iteration, "step_type": "token_limit",
+                    "detail": {"tokens": total_tokens["total"], "budget": TOKEN_BUDGET},
+                    "duration_ms": 0,
+                })
+                break
+
             iter_start = time.time()
             # LLM 调用 — 3 次退避重试（应对 API 波动）
             resp = None
@@ -416,6 +440,26 @@ class BaseAgent:
 
             # 工具调用
             if msg.tool_calls:
+                # ---- 防线2: 死循环检测 ----
+                this_calls = sorted(
+                    f"{tc.function.name}:{tc.function.arguments[:120]}"
+                    for tc in msg.tool_calls
+                )
+                this_sig = "|".join(this_calls)
+                if this_sig == last_tool_sig and this_sig != "":
+                    repeat_count += 1
+                    if repeat_count >= MAX_REPEAT:
+                        final_text = "抱歉，我在处理时遇到了一些困难。请您换个方式描述需求，我会重新帮您处理。"
+                        trace_steps.append({
+                            "iteration": iteration, "step_type": "repeat_limit",
+                            "detail": {"repeated_calls": this_sig, "count": repeat_count},
+                            "duration_ms": 0,
+                        })
+                        break
+                else:
+                    repeat_count = 0
+                last_tool_sig = this_sig
+
                 if msg.content:
                     partial_texts.append(msg.content)
 
@@ -713,7 +757,31 @@ class BaseAgent:
         total_tokens = {"prompt": 0, "completion": 0, "total": 0}
         tool_calls_log: list[dict] = []
 
-        for iteration in range(self.max_iterations):
+        # ====== 动态轮次 + 死循环检测（流式版本） ======
+        plan_count = ctx.get("plan_steps_count", 0)
+        if plan_count > 1:
+            effective_max = min(plan_count * 3 + 2, self.max_iterations)
+        else:
+            effective_max = 5
+
+        last_tool_sig = ""
+        repeat_count = 0
+        MAX_REPEAT = 2
+        TOKEN_BUDGET = settings.agent_token_budget
+        # ==============================================
+
+        for iteration in range(effective_max):
+            # ---- 防线1: Token 预算 ----
+            if total_tokens["total"] > TOKEN_BUDGET:
+                full_text = "当前任务较复杂，已为您完成部分处理。如有需要请继续提问。"
+                yield full_text
+                trace_steps.append({
+                    "iteration": iteration, "step_type": "token_limit",
+                    "detail": {"tokens": total_tokens["total"], "budget": TOKEN_BUDGET},
+                    "duration_ms": 0,
+                })
+                break
+
             iter_start = time.time()
             # LLM 流式调用 — 3 次退避重试
             resp = None
@@ -803,6 +871,27 @@ class BaseAgent:
 
             # 有工具调用 → 并行执行（与 run() 一致）
             if tool_call_chunks:
+                # ---- 防线2: 死循环检测（流式版本） ----
+                this_calls = sorted(
+                    f"{tc['name']}:{tc['arguments'][:120]}"
+                    for tc in tool_call_chunks.values()
+                )
+                this_sig = "|".join(this_calls)
+                if this_sig == last_tool_sig and this_sig != "":
+                    repeat_count += 1
+                    if repeat_count >= MAX_REPEAT:
+                        full_text = "抱歉，我在处理时遇到了一些困难。请您换个方式描述需求。"
+                        yield full_text
+                        trace_steps.append({
+                            "iteration": iteration, "step_type": "repeat_limit",
+                            "detail": {"repeated_calls": this_sig, "count": repeat_count},
+                            "duration_ms": 0,
+                        })
+                        break
+                else:
+                    repeat_count = 0
+                last_tool_sig = this_sig
+
                 # 追踪 LLM 调用（调工具前）
                 trace_steps.append({
                     "iteration": iteration, "step_type": "llm_call",
