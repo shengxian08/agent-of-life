@@ -51,7 +51,8 @@
 | **混合检索** | Dense向量 + BM25关键词 + RRF融合 + BGE-Reranker精排 |
 | **向量库** | Qdrant (Docker 部署，生产级) |
 | **框架** | FastAPI + asyncio + SSE 流式 |
-| **数据库** | SQLAlchemy 2.0 异步 + SQLite |
+| **数据库** | SQLAlchemy 2.0 异步 + PostgreSQL (asyncpg) |
+| **缓存** | Redis (对话持久化 + 双写) |
 | **评估** | 自研 LLM Judge (Faithfulness/Relevancy/Precision/Recall) |
 | **部署** | Docker Compose 一键启动 |
 
@@ -104,7 +105,7 @@ cat data/eval_report.json
 ## 🎯 项目亮点
 
 1. **自研 ReAct 循环，非 LangChain**
-   - 60行实现 Agent 核心逻辑，完全可控
+   - 完整实现 Agent 核心逻辑，完全可控
    - 并行工具调用 + 30s超时 + 3次退避重试
    - 滑动窗口对话摘要压缩（token ≤ 3000）
 
@@ -119,7 +120,7 @@ cat data/eval_report.json
 
 4. **架构简洁**
    - 清理 1600+ 行死代码，6 Agent → 1 Agent
-   - 设计决策：ChromaDB 够用不用 Milvus，原生 OpenAI 不用 LangChain
+   - 设计决策：Qdrant 够用不用 Milvus，原生 OpenAI 不用 LangChain
 
 ## ⚙️ 设计决策
 
@@ -151,5 +152,5 @@ backend/app/
 ├── models/          SQLAlchemy 模型
 ├── services/        调度服务
 ├── eval/            评估模块 (LLM Judge + test_dataset)
-└── memory/          ChromaDB + 对话记忆
+└── memory/          Qdrant + 对话记忆
 ```
