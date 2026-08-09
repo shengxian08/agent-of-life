@@ -37,6 +37,7 @@ class UnifiedAgent(BaseAgent):
                 "get_fridge_inventory",
                 "add_fridge_item",
                 "remove_fridge_item",
+                "add_to_shopping_list",
                 "record_shopping",
                 "generate_shopping_list",
                 "compare_supermarket_prices",

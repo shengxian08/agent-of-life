@@ -5,6 +5,7 @@ RAG 问答链 v4.0 — 真正的 LLM 驱动的检索增强生成
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime
 from typing import Any, AsyncGenerator
 
@@ -39,6 +40,7 @@ class RAGChain:
         from .retriever import get_retriever
         self.retriever = get_retriever()
         self._client = None
+        self._ingested_hashes: set[str] = set()  # 去重：已摄入文档的 MD5
 
     @property
     def client(self):
@@ -223,18 +225,86 @@ class RAGChain:
 - 中文回答，简洁清晰"""
 
     # ================================================================
+    # 文档摄入 — 文本清洗工具
+    # ================================================================
+
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        """入库前清洗：全角→半角 + 空白规范化"""
+        if not text:
+            return text
+
+        # ① 全角→半角转换（用户常从微信/Word 复制含全角字符的文档）
+        result = []
+        for c in text:
+            code = ord(c)
+            if 0xFF01 <= code <= 0xFF5E:          # 全角标点/字母/数字 → 半角
+                result.append(chr(code - 0xFEE0))
+            elif code == 0x3000:                   # 全角空格 → 半角空格
+                result.append(' ')
+            else:
+                result.append(c)
+        text = ''.join(result)
+
+        # ② 多余空白行合并（连续空行 → 最多保留一个段落分隔）
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        # ③ 行内多余空格合并
+        text = re.sub(r' {2,}', ' ', text)
+        # ④ 首尾空白
+        text = text.strip()
+
+        return text
+
+    @staticmethod
+    def _quality_check(text: str) -> dict:
+        """文本质量检测 — 返回分数和警告"""
+        total = len(text)
+        if total == 0:
+            return {"score": 0, "warning": "空文本"}
+
+        # 有效字符占比（中文 + 英文 + 数字）
+        meaningful = sum(1 for c in text
+                         if '一' <= c <= '鿿'   # 中文
+                         or c.isalpha()                   # 英文
+                         or c.isdigit())                  # 数字
+        ratio = meaningful / max(total, 1)
+
+        if ratio < 0.3 and total > 100:
+            return {"score": ratio, "warning": f"有效信息密度仅 {ratio:.0%}，可能是扫描件或乱码"}
+
+        return {"score": ratio, "warning": None}
+
+    # ================================================================
     # 文档摄入
     # ================================================================
 
     async def ingest_document(
         self, text: str, metadata: dict | None = None, source: str = ""
     ) -> dict[str, Any]:
-        """摄入文档到知识库（语义分块 + 向量化入库）"""
+        """摄入文档到知识库（清洗 → 去重 → 语义分块 → 向量化入库）"""
         from .chunker import DocumentChunker
         from .embeddings import get_embedding_generator
 
+        # ① 清洗
+        text = self._clean_text(text)
+        if not text.strip():
+            return {"ingested": 0, "chunks": [], "error": "文档清洗后为空"}
+
+        # ② 质量检测（低质量不拒绝，只告警）
+        quality = self._quality_check(text)
+
+        # ③ 去重
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        if text_hash in self._ingested_hashes:
+            return {"ingested": 0, "chunks": [], "error": "文档已存在（内容重复），跳过入库"}
+        self._ingested_hashes.add(text_hash)
+        # 去重集合上限 5000，防内存泄漏
+        if len(self._ingested_hashes) > 5000:
+            self._ingested_hashes = set(list(self._ingested_hashes)[-3000:])
+
+        # ④ 分块
         chunker = DocumentChunker(strategy="semantic")
-        chunks = chunker.split_text(text)
+        chunks = await chunker.split_text(text)
 
         if not chunks:
             return {"ingested": 0, "chunks": [], "error": "No valid text to ingest"}

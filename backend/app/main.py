@@ -128,15 +128,6 @@ async def _index_recipes_bg():
         logger.warning(f"Indexing skipped (model not ready): {e}")
 
 
-async def _startup_check():
-    try:
-        from .services.scheduler_service import get_scheduler
-        await get_scheduler().run_daily_checkup()
-        logger.success("Startup check complete")
-    except Exception as e:
-        logger.warning(f"Startup check skipped: {e}")
-
-
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
@@ -205,16 +196,6 @@ async def root():
     }
 
 
-@app.get("/favicon.ico")
-async def favicon():
-    import os
-    favicon_path = os.path.join(frontend_dir, "favicon.png")
-    if os.path.exists(favicon_path):
-        from fastapi.responses import FileResponse
-        return FileResponse(favicon_path, media_type="image/png")
-    return {"detail": "Not Found"}
-
-
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": settings.app_name, "version": settings.app_version}
@@ -230,17 +211,27 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ---- Frontend ----
-import os
-frontend_dir = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "frontend")
+import os as _os
+_frontend_dir = _os.path.abspath(
+    _os.path.join(_os.path.dirname(__file__), "..", "..", "frontend")
 )
-if os.path.exists(frontend_dir):
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    favicon_path = _os.path.join(_frontend_dir, "favicon.png")
+    if _os.path.exists(favicon_path):
+        return FileResponse(favicon_path, media_type="image/png")
+    return {"detail": "Not Found"}
+
+
+if _os.path.exists(_frontend_dir):
     @app.get("/app")
     async def serve_frontend():
-        return FileResponse(os.path.join(frontend_dir, "index.html"))
+        return FileResponse(_os.path.join(_frontend_dir, "index.html"))
 
     try:
-        app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+        app.mount("/static", StaticFiles(directory=_frontend_dir), name="static")
     except Exception:
         pass
 

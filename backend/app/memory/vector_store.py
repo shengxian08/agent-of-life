@@ -60,18 +60,38 @@ class VectorStore:
                     f"Qdrant collection '{self.collection_name}' created ({self._dim}d, cosine)"
                 )
             else:
-                info = client.get_collection(self.collection_name)
+                self._collection_info = client.get_collection(self.collection_name)
                 logger.info(
-                    f"Qdrant collection '{self.collection_name}' loaded ({info.points_count} points, {self._dim}d, cosine)"
+                    f"Qdrant collection '{self.collection_name}' loaded ({self._collection_info.points_count} points, {self._dim}d, cosine)"
                 )
         except Exception as e:
             logger.warning(f"Qdrant collection init failed: {e}")
+
+    @property
+    def collection(self):
+        """返回 Qdrant collection 对象（兼容旧代码直接访问 vs.collection）"""
+        client = _get_qdrant()
+        if client is None:
+            return None
+        try:
+            return client.get_collection(self.collection_name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _to_uuid(pid: str) -> str:
+        """将任意字符串 ID 转换为 Qdrant 接受的 UUID 格式"""
+        import hashlib
+        h = hashlib.md5(pid.encode()).hexdigest()
+        return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
 
     async def add(self, texts, metadatas=None, ids=None, embeddings=None):
         if not texts:
             return []
         if ids is None:
-            ids = [uuid.uuid4().hex[:16] for _ in texts]
+            ids = [str(uuid.uuid4()) for _ in texts]
+        # Qdrant 只接受 uint 或 UUID，字符串 ID 统一转换
+        ids = [self._to_uuid(pid) for pid in ids]
         if metadatas is None:
             metadatas = [{}] * len(texts)
         if embeddings is None:
@@ -82,7 +102,7 @@ class VectorStore:
                 from qdrant_client.models import PointStruct
                 points = [
                     PointStruct(
-                        id=ids[i] if i < len(ids) else uuid.uuid4().hex[:16],
+                        id=ids[i] if i < len(ids) else self._to_uuid(uuid.uuid4().hex),
                         vector=embeddings[i] if i < len(embeddings) else [0.0] * self._dim,
                         payload={"text": texts[i] if i < len(texts) else "", **(metadatas[i] if i < len(metadatas) else {})},
                     )
@@ -175,6 +195,8 @@ class VectorStore:
 
     async def delete(self, ids):
         client = _get_qdrant()
+        # 统一转换为 UUID
+        ids = [self._to_uuid(pid) for pid in ids]
         if client is not None:
             try:
                 from qdrant_client.models import PointIdsList

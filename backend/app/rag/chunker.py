@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -23,17 +24,17 @@ class DocumentChunker:
         self.chunk_overlap = chunk_overlap
         self.strategy = strategy
 
-    def split_text(self, text: str) -> list[str]:
+    async def split_text(self, text: str) -> list[str]:
         """分块主入口 — 自动选择最优策略"""
         if not text or not text.strip():
             return []
 
         if self.strategy == "semantic":
-            return self._semantic_split(text)
+            return await self._semantic_split(text)
 
         return self._recursive_split(text)
 
-    def _semantic_split(self, text: str) -> list[str]:
+    async def _semantic_split(self, text: str) -> list[str]:
         """语义分块 — 基于 Embedding 相似度断点
 
         原理：计算相邻句子的余弦相似度，在相似度骤降处切断
@@ -45,7 +46,12 @@ class DocumentChunker:
         try:
             from .embeddings import get_embedding_generator
             embedder = get_embedding_generator()
-            embeddings = embedder.embed_sync(sentences)
+            # 尝试异步执行避免阻塞，不在 async 上下文时直接同步调用
+            try:
+                loop = asyncio.get_running_loop()
+                embeddings = await loop.run_in_executor(None, embedder.embed_sync, sentences)
+            except RuntimeError:
+                embeddings = embedder.embed_sync(sentences)
 
             if not embeddings or len(embeddings) != len(sentences):
                 raise ValueError("Embedding failed")
@@ -162,14 +168,14 @@ class DocumentChunker:
 
         return chunks
 
-    def split_documents(
+    async def split_documents(
         self, documents: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """批量分块，保留元数据"""
         result = []
         for doc in documents:
             text = doc.get("text", "") or doc.get("content", "")
-            chunks = self.split_text(text)
+            chunks = await self.split_text(text)
             for i, chunk in enumerate(chunks):
                 result.append({
                     "text": chunk,

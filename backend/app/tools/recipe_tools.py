@@ -1140,10 +1140,18 @@ async def search_recipes(
     max_cooking_time: int = 0,
     tags: list[str] | None = None,
     limit: int = 10,
-) -> list[Recipe]:
+) -> dict:
     """搜索菜谱 — 中文分词 + 多维度加权评分
 
     支持部分匹配："黄焖鸡炒饭" → 匹配"黄焖鸡"和"炒饭"相关菜谱
+
+    Returns:
+        dict with keys:
+        - recipes (list): 匹配到的菜谱列表（成功时）
+        - fallback (bool): 是否为降级结果
+        - message (str): 降级说明（仅 fallback 时）
+        - suggestions (list): 最接近的菜谱（仅 fallback 时）
+        - hint (str): 给 LLM 的提示（仅 fallback 时）
     """
     query_tokens = _tokenize_query(query) if query else []
 
@@ -1177,13 +1185,15 @@ async def search_recipes(
     MIN_RELEVANCE = 0.12
 
     if scored_results and scored_results[0][0] >= MIN_RELEVANCE:
-        return [Recipe(**r) for _, r in scored_results[:limit]]
+        recipes = [Recipe(**r).model_dump() for _, r in scored_results[:limit]]
+        return {"recipes": recipes, "fallback": False, "total": len(recipes)}
 
     # ═══════════════════════════════════════════════════════
     # Fallback: 知识库无匹配 → 返回最接近的菜谱 + 引导LLM自行回答
     # ═══════════════════════════════════════════════════════
     closest = _find_closest_any(query_tokens, limit=5) if query_tokens else RECIPES[:5]
     return {
+        "recipes": [],
         "fallback": True,
         "message": (
             f"知识库中没有与「{query}」精确匹配的菜谱。"
@@ -1379,13 +1389,20 @@ async def index_recipes_to_vectordb(force: bool = False) -> int:
 
     vector_store = get_vector_store()
 
-    # 检查是否已索引（通过 collection 中是否有 recipe 标签的文档）
+    # 检查是否已索引（通过 Qdrant scroll + filter 检测已有 recipe 数据）
     try:
-        if vector_store.collection and vector_store.collection.count() > 0:
-            existing = vector_store.collection.get(
-                where={"source": "recipe_db"}, limit=1
+        from ..memory.vector_store import _get_qdrant
+        client = _get_qdrant()
+        if client is not None:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            existing, _ = client.scroll(
+                collection_name=vector_store.collection_name,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="source", match=MatchValue(value="recipe_db"))]
+                ),
+                limit=1,
             )
-            if existing and existing.get("ids"):
+            if existing:
                 _RECIPES_INDEXED = True
                 return 0  # 已索引，跳过
     except Exception:
@@ -1590,13 +1607,20 @@ async def index_knowledge_to_vectordb(force: bool = False) -> int:
 
     vector_store = get_vector_store()
 
-    # 检查是否已索引
+    # 检查是否已索引（通过 Qdrant scroll + filter 检测已有 knowledge 数据）
     try:
-        if vector_store.collection and vector_store.collection.count() > 0:
-            existing = vector_store.collection.get(
-                where={"source": "household_knowledge"}, limit=1
+        from ..memory.vector_store import _get_qdrant
+        client = _get_qdrant()
+        if client is not None:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            existing, _ = client.scroll(
+                collection_name=vector_store.collection_name,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="source", match=MatchValue(value="household_knowledge"))]
+                ),
+                limit=1,
             )
-            if existing and existing.get("ids"):
+            if existing:
                 _KNOWLEDGE_INDEXED = True
                 return 0
     except Exception:

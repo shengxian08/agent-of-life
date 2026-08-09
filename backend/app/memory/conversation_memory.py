@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -31,9 +32,6 @@ class ConversationMemory:
         self._redis = None
         self._redis_connected = False
         self._summary_cache: dict[str, str] = {}
-        # Simple semantic cache: {query_hash: (response, timestamp)}
-        self._semantic_cache: dict[str, tuple[str, datetime]] = {}
-        self._cache_ttl_seconds = 300  # 5 分钟 TTL
         self._session_users: dict[str, str] = {}  # session_id → user_id 映射
 
     async def _get_redis(self):
@@ -91,7 +89,6 @@ class ConversationMemory:
         # 自动触发记忆固化
         if len(self._memory[session_id]) >= settings.memory_consolidation_threshold:
             # 后台任务，不阻塞，带错误处理
-            import asyncio
             async def _safe_consolidate():
                 try:
                     await self._consolidate_if_needed(session_id)
@@ -133,17 +130,6 @@ class ConversationMemory:
                 logger.debug(f"Redis read failed: {e}")
 
         return []
-
-    async def get_context_window(
-        self, session_id: str, window_size: int = 10
-    ) -> list[dict[str, str]]:
-        """获取 LLM 可用的上下文窗口 (openai message format)"""
-        history = await self.get_history(session_id, limit=window_size)
-        return [
-            {"role": msg.role, "content": msg.content}
-            for msg in history
-            if msg.role in ("user", "assistant")
-        ]
 
     # ================================================================
     # 记忆固化 — 自动摘要 + 偏好提取 + 长期存储
@@ -240,30 +226,8 @@ class ConversationMemory:
             )
 
     # ================================================================
-    # 记忆检索
+    # 记忆检索（主入口）
     # ================================================================
-
-    async def search_memory(
-        self, query: str, user_id: str = "", top_k: int = 5
-    ) -> list[str]:
-        """搜索相关的长期记忆（按 user_id 隔离）"""
-        vs = get_vector_store()
-        results = await vs.search(query, top_k=top_k * 2)  # 多召回一些，过滤后可能不够
-        filtered = []
-        for r in results:
-            meta = r.get("metadata", {})
-            # 类型过滤
-            if meta.get("type") not in ("memory_consolidation", "conversation_summary"):
-                continue
-            # user_id 过滤（与 retrieve_user_memories 一致）
-            mem_user_id = meta.get("user_id", "")
-            if user_id and mem_user_id and mem_user_id != user_id:
-                if user_id not in meta.get("session_id", ""):
-                    continue
-            filtered.append(r.get("text", ""))
-            if len(filtered) >= top_k:
-                break
-        return filtered
 
     async def retrieve_user_memories(
         self, user_id: str, query: str = "", top_k: int = 10
@@ -395,37 +359,6 @@ class ConversationMemory:
         except Exception as e:
             logger.debug(f"Preference extraction failed: {e}")
             return None
-
-    # ================================================================
-    # Semantic Cache (basic, for frequently repeated queries)
-    # ================================================================
-
-    def _cache_key(self, session_id: str, query: str) -> str:
-        """Generate simple cache key from session and normalized query"""
-        import hashlib
-        normalized = query.strip().lower()[:200]
-        return hashlib.md5(f"{session_id}:{normalized}".encode()).hexdigest()
-
-    async def cache_lookup(self, session_id: str, query: str) -> str | None:
-        """Check if query is in semantic cache"""
-        key = self._cache_key(session_id, query)
-        cached = self._semantic_cache.get(key)
-        if cached:
-            response, timestamp = cached
-            if (datetime.now() - timestamp).total_seconds() < self._cache_ttl_seconds:
-                return response
-            else:
-                del self._semantic_cache[key]
-        return None
-
-    async def cache_store(self, session_id: str, query: str, response: str):
-        """Store query→response in semantic cache"""
-        key = self._cache_key(session_id, query)
-        self._semantic_cache[key] = (response, datetime.now())
-        # LRU eviction: keep max 500 entries
-        if len(self._semantic_cache) > 500:
-            oldest = min(self._semantic_cache, key=lambda k: self._semantic_cache[k][1])
-            del self._semantic_cache[oldest]
 
     # ================================================================
     # 生命周期

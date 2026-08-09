@@ -5,7 +5,7 @@ from fastapi import APIRouter, Query, UploadFile, File
 from pydantic import BaseModel
 from loguru import logger
 
-from ...memory.vector_store import get_vector_store
+from ...memory.vector_store import get_vector_store, _get_qdrant
 from ...rag.qa_chain import get_rag_chain
 from ...rag.retriever import get_retriever
 
@@ -31,8 +31,9 @@ async def kb_stats():
     backend = "unknown"
 
     try:
-        if vs.collection:
-            count = vs.collection.count()
+        collection_info = vs.collection
+        if collection_info:
+            count = collection_info.points_count
             backend = "Qdrant"
         elif hasattr(vs, "_fallback_store"):
             count = len(vs._fallback_store)
@@ -55,18 +56,22 @@ async def kb_list(limit: int = Query(50, ge=1, le=200)):
     docs = []
 
     try:
-        if vs.collection and vs.collection.count() > 0:
-            results = vs.collection.get(limit=limit)
-            for i, (doc_id, doc, meta) in enumerate(zip(
-                results.get("ids", []),
-                results.get("documents", []),
-                results.get("metadatas", []),
-            )):
+        client = _get_qdrant()
+        if client is not None:
+            points, _ = client.scroll(
+                collection_name=vs.collection_name,
+                limit=limit,
+                with_payload=True,
+            )
+            for i, point in enumerate(points):
+                payload = point.payload or {}
+                text = payload.get("text", "")
+                meta = {k: v for k, v in payload.items() if k != "text"}
                 docs.append({
                     "index": i + 1,
-                    "id": doc_id,
-                    "content_preview": (doc[:150] + "...") if len(doc) > 150 else doc,
-                    "content_length": len(doc),
+                    "id": str(point.id),
+                    "content_preview": (text[:150] + "...") if len(text) > 150 else text,
+                    "content_length": len(text),
                     "metadata": meta,
                 })
     except Exception:
@@ -131,8 +136,16 @@ async def kb_clear():
     """清空知识库"""
     vs = get_vector_store()
     try:
-        if vs.collection:
-            vs.collection.delete(where={})
+        client = _get_qdrant()
+        if client is not None:
+            client.delete_collection(vs.collection_name)
+            # 重新创建空 collection
+            from qdrant_client.models import Distance, VectorParams
+            from ..config import settings
+            client.create_collection(
+                collection_name=vs.collection_name,
+                vectors_config=VectorParams(size=settings.embedding_dim, distance=Distance.COSINE),
+            )
             return {"status": "cleared", "backend": "Qdrant"}
     except Exception:
         pass

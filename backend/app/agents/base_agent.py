@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import json
 import time
 import uuid
@@ -103,6 +104,19 @@ def _serialize_tool_result(obj: Any) -> Any:
     return obj
 
 
+def _make_confirmed_key(tool_name: str, args: dict, confirmed_set: set[str]) -> str:
+    """生成确认键并检查是否在已确认集合中
+
+    Returns:
+        "{tool_name}:{args_hash}" 如果已确认，否则 ""
+    """
+    args_hash = hashlib.md5(
+        json.dumps(args, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()[:8]
+    key = f"{tool_name}:{args_hash}"
+    return key if key in confirmed_set else ""
+
+
 class BaseAgent:
     """ReAct Agent v2 — 改进版 ReAct 循环 + 并行工具调用"""
 
@@ -181,6 +195,7 @@ class BaseAgent:
         self, name: str, arguments: dict, user_id: str = "",
         max_retries: int = 3, timeout_seconds: float = 30.0,
         confirmed_dangerous: bool = False,
+        confirmed_key: str = "",
     ) -> str:
         """调用工具 — 带重试 + 超时 + 安全护栏"""
         tool = ToolRegistry.get(name)
@@ -189,9 +204,10 @@ class BaseAgent:
 
         # ═══════════════════════════════════════════════════════
         # 安全护栏：危险操作必须先经用户确认
+        # confirmed_key 为 "{tool_name}:{args_hash}"，精确匹配本次调用的工具+参数
         # ═══════════════════════════════════════════════════════
         danger_level = ToolRegistry.get_danger_level(name)
-        if danger_level == "dangerous" and not confirmed_dangerous:
+        if danger_level == "dangerous" and not (confirmed_dangerous or confirmed_key):
             return json.dumps({
                 "requires_confirmation": True,
                 "tool": name,
@@ -275,10 +291,13 @@ class BaseAgent:
         user_id = request.user_id
         session_id = request.session_id
 
-        # 已确认的工具集合（安全护栏用）
+        # 已确认的工具集合（安全护栏用）— 按 (tool_name, args_json_hash) 粒度确认
         confirmed_set: set[str] = set()
         for item in request.confirmed_tools:
-            confirmed_set.add(item.get("tool", ""))
+            tool_name = item.get("tool", "")
+            args = item.get("args", {})
+            args_hash = hashlib.md5(json.dumps(args, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:8]
+            confirmed_set.add(f"{tool_name}:{args_hash}")
 
         # 意图路由
         routed_label = "fallback"
@@ -492,7 +511,7 @@ class BaseAgent:
 
                 results = await asyncio.gather(
                     *[self._call_tool(name, args, user_id,
-                                      confirmed_dangerous=(name in confirmed_set))
+                                      confirmed_key=_make_confirmed_key(name, args, confirmed_set))
                       for _, name, args in tool_tasks],
                     return_exceptions=True,
                 )
@@ -523,90 +542,27 @@ class BaseAgent:
                     else:
                         result_str = result
 
-                    # ═══════════════════════════════════════════════
-                    # 安全护栏检测：工具返回 requires_confirmation
-                    # ═══════════════════════════════════════════════
-                    if "requires_confirmation" in result_str:
-                        try:
-                            confirm_data = json.loads(result_str)
-                            if confirm_data.get("requires_confirmation"):
-                                # 停止 ReAct 循环，返回确认请求给前端
-                                logger.info(
-                                    f"Safety guard: tool '{tool_name}' requires user confirmation"
-                                )
-                                pending_calls = [{
-                                    "tool": tool_name,
-                                    "args": args,
-                                    "message": confirm_data.get("message", f"确认执行 {tool_name}？"),
-                                }]
-                                # 同时检查本轮其他工具是否也需要确认
-                                for (tc2, name2, args2), result2 in zip(tool_tasks, results):
-                                    if (name2, args2.get("action", "")) == (tool_name, args.get("action", "")):
-                                        continue
-                                    # 只收集本轮所有待确认工具（简化处理：只看第一个）
-                                    pass
+                    # 共享处理: 安全护栏 → 视频提取 → 自动修复 → 日志追踪
+                    result_str, confirm = await self._process_single_tool_result(
+                        tool_name, args, result_str, user_id,
+                        video_data_list, tool_calls_log, trace_steps, iteration,
+                    )
+                    if confirm:
+                        total_duration = int((time.time() - t_start) * 1000)
+                        return AgentResponse(
+                            session_id=session_id,
+                            response=confirm.get("message", f"即将执行高危操作，请确认：{tool_name}"),
+                            intent=request.intent or "general",
+                            tool_calls=tool_calls_log,
+                            confidence=0.95,
+                            requires_confirmation=True,
+                            pending_dangerous_calls=[confirm],
+                        )
 
-                                total_duration = int((time.time() - t_start) * 1000)
-                                return AgentResponse(
-                                    session_id=session_id,
-                                    response=confirm_data.get("message",
-                                        f"即将执行高危操作，请确认：{tool_name}"),
-                                    intent=request.intent or "general",
-                                    tool_calls=tool_calls_log,
-                                    confidence=0.95,
-                                    requires_confirmation=True,
-                                    pending_dangerous_calls=pending_calls,
-                                )
-                        except json.JSONDecodeError:
-                            pass  # 不是合法的确认请求，继续正常流程
-
-                    # 视频工具：当场提取视频数据（不被 300 字符截断影响）
-                    if tool_name == "search_recipe_videos" and "error" not in result_str.lower():
-                        try:
-                            vr = json.loads(result_str)
-                            if vr.get("videos"):
-                                video_data_list.extend(vr["videos"])
-                        except Exception:
-                            pass
-
-                    # ═══════════════════════════════════════════════
-                    # 自动修复：工具返回错误时尝试修参重试
-                    # ═══════════════════════════════════════════════
-                    auto_fixed = False
-                    if "error" in result_str.lower():
-                        tool_danger = ToolRegistry.get_danger_level(tool_name)
-                        if tool_danger != "dangerous":
-                            fixed_args, retry_result = await self._auto_fix_and_retry(
-                                tool_name, args, result_str, user_id,
-                            )
-                            if fixed_args is not None:
-                                result_str = retry_result
-                                args = fixed_args
-                                auto_fixed = True
-
-                    result_summary = result_str[:300]
-                    if auto_fixed:
-                        result_summary = "[auto-fixed] " + result_summary
-                    tool_calls_log.append({
-                        "tool": tool_name,
-                        "args": args,
-                        "result": result_summary,
-                    })
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": result_str,
-                    })
-                    # 追踪每次工具调用
-                    trace_steps.append({
-                        "iteration": iteration, "step_type": "tool_result",
-                        "detail": {
-                            "tool": tool_name,
-                            "args": {k: str(v)[:100] for k, v in args.items()},
-                            "result_summary": result_summary,
-                            "is_error": "error" in result_summary.lower(),
-                        },
-                        "duration_ms": 0,  # 工具调用时间已计入整体
                     })
                 continue
 
@@ -920,7 +876,7 @@ class BaseAgent:
                 # 并行执行所有工具
                 results = await asyncio.gather(
                     *[self._call_tool(name, args, user_id,
-                                      confirmed_dangerous=(name in stream_confirmed_set))
+                                      confirmed_key=_make_confirmed_key(name, args, stream_confirmed_set))
                       for _, name, args, _ in tool_tasks],
                     return_exceptions=True,
                 )
@@ -930,59 +886,15 @@ class BaseAgent:
                     if isinstance(tool_result, Exception):
                         tool_result = json.dumps({"error": str(tool_result)}, ensure_ascii=False)
 
-                    # ═══════════════════════════════════════════════
-                    # 安全护栏检测（流式版本）
-                    # ═══════════════════════════════════════════════
-                    if "requires_confirmation" in str(tool_result):
-                        try:
-                            confirm_data = json.loads(tool_result)
-                            if confirm_data.get("requires_confirmation"):
-                                pending_confirmations.append({
-                                    "tool": tool_name,
-                                    "args": args,
-                                    "message": confirm_data.get("message", f"确认执行 {tool_name}？"),
-                                })
-                                continue  # 不加入消息历史，直接跳过
-                        except json.JSONDecodeError:
-                            pass
-                    # 捕获视频搜索结果
-                    if tool_name == "search_recipe_videos" and "error" not in tool_result.lower():
-                        try:
-                            vr = json.loads(tool_result)
-                            if vr.get("videos"):
-                                video_results.extend(vr["videos"])
-                        except Exception:
-                            pass
-                    # 自动修复（流式版本）
-                    auto_fixed_stream = False
-                    if "error" in tool_result.lower() and ToolRegistry.get_danger_level(tool_name) != "dangerous":
-                        fixed_args_s, retry_result_s = await self._auto_fix_and_retry(
-                            tool_name, args, tool_result, user_id,
-                        )
-                        if fixed_args_s is not None:
-                            tool_result = retry_result_s
-                            args = fixed_args_s
-                            auto_fixed_stream = True
+                    # 共享处理: 安全护栏 → 视频提取 → 自动修复 → 日志追踪
+                    tool_result, confirm = await self._process_single_tool_result(
+                        tool_name, args, tool_result, user_id,
+                        video_results, tool_calls_log, trace_steps, iteration,
+                    )
+                    if confirm:
+                        pending_confirmations.append(confirm)
+                        continue  # 不加入消息历史，等待用户确认后重发
 
-                    # 追踪工具结果
-                    result_summary = tool_result[:300]
-                    if auto_fixed_stream:
-                        result_summary = "[自动修复] " + result_summary
-                    tool_calls_log.append({
-                        "tool": tool_name,
-                        "args": args,
-                        "result": result_summary,
-                    })
-                    trace_steps.append({
-                        "iteration": iteration, "step_type": "tool_result",
-                        "detail": {
-                            "tool": tool_name,
-                            "args": {k: str(v)[:100] for k, v in args.items()},
-                            "result_summary": result_summary,
-                            "is_error": "error" in result_summary.lower(),
-                        },
-                        "duration_ms": 0,
-                    })
                     assistant_msg: dict = {
                         "role": "assistant",
                         "content": None,
@@ -1194,6 +1106,78 @@ class BaseAgent:
             logger.debug(f"Auto-fix failed: {e}")
             return None, error_msg
 
+    async def _process_single_tool_result(
+        self, tool_name: str, args: dict, result_str: str, user_id: str,
+        video_data_list: list[dict], tool_calls_log: list[dict],
+        trace_steps: list[dict], iteration: int,
+    ) -> tuple[str, dict | None]:
+        """处理单个工具调用结果: 安全护栏 → 视频提取 → 自动修复 → 日志追踪
+
+        run() 和 run_stream() 共享此方法，确保工具结果处理逻辑一致。
+
+        Returns:
+            (result_str, confirmation_dict_or_None)
+        """
+        # 安全护栏检测
+        if "requires_confirmation" in result_str:
+            try:
+                confirm_data = json.loads(result_str)
+                if confirm_data.get("requires_confirmation"):
+                    logger.info(
+                        f"Safety guard: tool '{tool_name}' requires user confirmation"
+                    )
+                    return result_str, {
+                        "tool": tool_name,
+                        "args": args,
+                        "message": confirm_data.get("message", f"确认执行 {tool_name}？"),
+                    }
+            except json.JSONDecodeError:
+                pass
+
+        # 视频工具：当场提取视频数据
+        if tool_name == "search_recipe_videos" and "error" not in result_str.lower():
+            try:
+                vr = json.loads(result_str)
+                if vr.get("videos"):
+                    video_data_list.extend(vr["videos"])
+            except Exception:
+                pass
+
+        # 自动修复：工具返回错误时尝试修参重试
+        auto_fixed = False
+        if "error" in result_str.lower():
+            tool_danger = ToolRegistry.get_danger_level(tool_name)
+            if tool_danger != "dangerous":
+                fixed_args, retry_result = await self._auto_fix_and_retry(
+                    tool_name, args, result_str, user_id,
+                )
+                if fixed_args is not None:
+                    result_str = retry_result
+                    args = fixed_args
+                    auto_fixed = True
+
+        # 追踪日志
+        result_summary = result_str[:300]
+        if auto_fixed:
+            result_summary = "[auto-fixed] " + result_summary
+        tool_calls_log.append({
+            "tool": tool_name,
+            "args": args,
+            "result": result_summary,
+        })
+        trace_steps.append({
+            "iteration": iteration, "step_type": "tool_result",
+            "detail": {
+                "tool": tool_name,
+                "args": {k: str(v)[:100] for k, v in args.items()},
+                "result_summary": result_summary,
+                "is_error": "error" in result_summary.lower(),
+            },
+            "duration_ms": 0,
+        })
+
+        return result_str, None
+
     @staticmethod
     def _build_video_cards_html(video_list: list[dict]) -> str:
         """构建视频卡片 HTML（run/run_stream 共享）"""
@@ -1229,10 +1213,6 @@ class BaseAgent:
                 f'</a>'
             )
         return f'<!--VIDEOS--><div class="video-cards">{cards}</div><!--/VIDEOS-->'
-
-    def clear_history(self):
-        """清除内存中的记忆注入标记（对话历史由 ConversationMemory 按 session 管理）"""
-        self._memory_injected.clear()
 
     def _schedule_preference_extraction(
         self, user_id: str, user_message: str, agent_response: str,

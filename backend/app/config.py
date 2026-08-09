@@ -65,10 +65,11 @@ class Settings(BaseSettings):
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_collection: str = Field(default="household_memory", alias="QDRANT_COLLECTION")
 
-    # === LangGraph Checkpointer (SQLite) ===
+    # === LangGraph Checkpointer (SQLite) — 已废弃，项目使用自研 ReAct，不依赖 LangGraph ===
     checkpoint_db_path: str = Field(
         default="./data/checkpoints.db",
-        alias="CHECKPOINT_DB_PATH"
+        alias="CHECKPOINT_DB_PATH",
+        description="[DEPRECATED] 项目已切换为自研 ReAct 循环，不再使用 LangGraph"
     )
 
     # === App ===

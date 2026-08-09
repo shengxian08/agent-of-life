@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .unified_agent import UnifiedAgent, get_unified_agent
+from .unified_agent import get_unified_agent
 from ..models.schemas import AgentRequest, AgentResponse
 
 
@@ -35,7 +35,6 @@ class HouseholdCrew:
             "evening_routine": "预约今晚错峰运行：洗碗机→洗衣机→扫地机器人，计算省电金额",
             "smart_check": "深度全面检查：冰箱库存+家电维保+待缴账单+安防状态，如有临期食材推荐菜谱，给出完整行动建议",
             "security_check": "执行安防巡检：检查门禁、监控摄像头、门窗传感器状态",
-            "scene_trigger": self._scene_message(session_id),
         }
 
         msg = WORKFLOW_MESSAGES.get(workflow_type)
@@ -53,20 +52,6 @@ class HouseholdCrew:
             "response": resp.response,
             "intent": resp.intent,
         }
-
-    def _scene_message(self, scene: str) -> str:
-        scenes = {
-            "morning": "启动早安模式：开窗帘、灯光渐亮、咖啡机预热，查看今日日程",
-            "away": "启动离家模式：关门窗、设防、关灯、家电节能",
-            "evening": "启动晚安模式：关窗帘、灯光调暗、空调设温、检查门窗",
-            "movie": "启动观影模式：关窗帘、灯光调暗、投影仪开启",
-            "cleaning": "启动全屋清扫：扫地机器人开始工作",
-        }
-        return scenes.get(scene, f"执行场景: {scene}")
-
-    def clear_all_history(self):
-        """清除对话历史"""
-        self.agent.clear_history()
 
 
 _household_crew = None

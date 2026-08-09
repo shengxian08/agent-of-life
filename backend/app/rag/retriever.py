@@ -30,6 +30,7 @@ class HybridRetriever:
         self._bm25_index = None
         self._bm25_docs: list[str] = []
         self._bm25_corpus_ids: list[str] = []
+        self._reranker_model = None  # CrossEncoder 缓存，避免每次查询重新加载
 
     # ================================================================
     # 阶段 0: Query Rewrite — 查询改写增强召回
@@ -258,12 +259,15 @@ class HybridRetriever:
             if not _os.environ.get("HF_HOME"):
                 _os.environ["HF_HOME"] = d_drive
 
-            from sentence_transformers import CrossEncoder
-
-            reranker = CrossEncoder(
-                settings.reranker_model_name,
-                device=settings.embedding_device,
-            )
+            # 缓存 CrossEncoder 模型，避免每次查询重载 (~2GB)
+            if self._reranker_model is None:
+                from sentence_transformers import CrossEncoder
+                self._reranker_model = CrossEncoder(
+                    settings.reranker_model_name,
+                    device=settings.embedding_device,
+                )
+                logger.info(f"CrossEncoder reranker loaded: {settings.reranker_model_name}")
+            reranker = self._reranker_model
 
             pairs = [[query, cand.get("text", "")] for cand in candidates]
             scores = reranker.predict(pairs, show_progress_bar=False)
@@ -356,9 +360,10 @@ class HybridRetriever:
         logger.debug(f"Rewritten queries ({len(queries)}): {[q[:50] for q in queries]}")
 
         # Phase 2: Dense + BM25 并行召回
+        loop = asyncio.get_running_loop()
         dense_results, bm25_results = await asyncio.gather(
             self._dense_retrieve(queries),
-            asyncio.to_thread(self._bm25_search, query),
+            loop.run_in_executor(None, self._bm25_search, query),
         )
 
         # Phase 3: RRF 融合

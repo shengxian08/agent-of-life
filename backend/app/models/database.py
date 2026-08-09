@@ -9,7 +9,7 @@ from typing import AsyncGenerator
 
 from sqlalchemy import (
     Column, String, Integer, Float, Date, DateTime, Text,
-    Enum as SAEnum, ForeignKey, create_engine, JSON
+    Enum as SAEnum, ForeignKey, JSON
 )
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship

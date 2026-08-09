@@ -199,9 +199,9 @@ async def login(req: LoginRequest):
         if not user:
             raise HTTPException(status_code=401, detail="账号或密码错误")
         if not user.password_hash:
-            user.password_hash = hash_password(req.password)
-            await session.commit()
-        elif not verify_password(req.password, user.password_hash):
+            # Legacy 用户无密码：提示管理员重置，不自动设置
+            raise HTTPException(status_code=401, detail="账号未设置密码，请联系管理员重置")
+        if not verify_password(req.password, user.password_hash):
             raise HTTPException(status_code=401, detail="账号或密码错误")
         user.last_login = datetime.now()
         await session.commit()
@@ -256,7 +256,7 @@ async def admin_reset_password(user_id: str, new_password: str, admin: str = Dep
         user.password_hash = hash_password(new_password)
         await session.commit()
         logger.warning(f"Admin reset password for {user_id} ({user.name})")
-        return {"status": "ok", "user_id": user_id, "name": user.name, "new_password": new_password}
+        return {"status": "ok", "user_id": user_id, "name": user.name, "message": "密码已重置"}
 
 
 @router.get("/admin/users")

@@ -1,9 +1,6 @@
 """
-FastAPI 依赖注入 v5.2 — 新增 JWT 认证依赖
+FastAPI 依赖注入 v5.2
 """
-from fastapi import Depends
-from fastapi.security import HTTPAuthorizationCredentials
-
 from ..agents.crew import get_household_crew, HouseholdCrew
 from ..memory.conversation_memory import get_conversation_memory, ConversationMemory
 from ..memory.user_profile import get_profile_manager, UserProfileManager
@@ -36,16 +33,3 @@ async def get_retriever_dep() -> HybridRetriever:
     return get_retriever()
 
 
-async def get_current_user_id(
-    credentials: HTTPAuthorizationCredentials | None = None,
-    x_user_id: str | None = None,
-) -> str:
-    """获取当前用户ID — 优先JWT，降级header，默认user_001"""
-    try:
-        from .routes.auth import get_current_user
-        from fastapi import Header, Depends
-        # 尝试解析 JWT
-        return await get_current_user(credentials, x_user_id)
-    except Exception:
-        pass
-    return "user_001"
