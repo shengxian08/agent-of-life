@@ -1,5 +1,5 @@
 """
-用户画像 - 从 SQLite 读写，唯一数据源
+用户画像 - 从 PostgreSQL 读写，唯一数据源
 """
 from __future__ import annotations
 
