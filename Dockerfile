@@ -19,8 +19,9 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # libgomp1 是 sentence-transformers / torch 的运行时依赖
+# fonts-dejavu-core 提供验证码所需的 TTF 字体
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libgomp1 && \
+    apt-get install -y --no-install-recommends libgomp1 fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
 # 从 builder 复制已安装的 Python 包

@@ -112,13 +112,25 @@ def _generate_captcha_image(text: str) -> str:
         x2, y2 = random.randint(w * 2 // 3, w), random.randint(0, h)
         draw.line((x1, y1, x2, y2), fill=(random.randint(180, 220), random.randint(180, 220), random.randint(180, 220)), width=2)
 
-    # 尝试用系统字体，找不到就用默认
-    try:
-        font = ImageFont.truetype("arial.ttf", 52)
-    except Exception:
+    # 按顺序尝试常见字体路径（Docker Debian / Windows / 系统默认）
+    _font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",   # Docker (Debian)
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:\\Windows\\Fonts\\arialbd.ttf",                         # Windows 粗体
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ]
+    font = None
+    for path in _font_paths:
         try:
-            font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 52)
+            font = ImageFont.truetype(path, 52)
+            break
         except Exception:
+            continue
+    if font is None:
+        try:
+            font = ImageFont.load_default(size=52)
+        except TypeError:
             font = ImageFont.load_default()
 
     # 逐字绘制，每个字颜色、角度不同
