@@ -97,7 +97,7 @@ def _clean_expired_captchas():
 
 def _generate_captcha_image(text: str) -> str:
     """生成图形验证码，返回 base64 图片"""
-    w, h = 140, 50
+    w, h = 240, 80
     img = Image.new("RGB", (w, h), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
@@ -114,20 +114,20 @@ def _generate_captcha_image(text: str) -> str:
 
     # 尝试用系统字体，找不到就用默认
     try:
-        font = ImageFont.truetype("arial.ttf", 32)
+        font = ImageFont.truetype("arial.ttf", 52)
     except Exception:
         try:
-            font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 32)
+            font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 52)
         except Exception:
             font = ImageFont.load_default()
 
     # 逐字绘制，每个字颜色、角度不同
     for i, ch in enumerate(text):
-        x = 15 + i * 30 + random.randint(-3, 3)
-        y = random.randint(2, 10)
+        x = 15 + i * 55 + random.randint(-3, 3)
+        y = random.randint(5, 18)
         color = (random.randint(0, 100), random.randint(0, 100), random.randint(150, 255))
         # 单个字符旋转
-        char_img = Image.new("RGBA", (40, 45), (255, 255, 255, 0))
+        char_img = Image.new("RGBA", (60, 70), (255, 255, 255, 0))
         char_draw = ImageDraw.Draw(char_img)
         char_draw.text((5, 0), ch, font=font, fill=color)
         char_img = char_img.rotate(random.randint(-25, 25), expand=False, fillcolor=(255, 255, 255, 0))

@@ -1100,7 +1100,7 @@ ul, ol { list-style: none; }
   display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
 }
 .captcha-img {
-  height: 44px; border-radius: 8px; border: 1px solid #e5e7eb;
+  height: 60px; border-radius: 8px; border: 1px solid #e5e7eb;
   cursor: pointer; flex-shrink: 0;
 }
 /* 隐藏数字输入框的加减按钮 */
