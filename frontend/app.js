@@ -40,13 +40,13 @@ function saveAuth(token, user) {
     // 欢迎卡片
     var msgs = document.querySelector('.messages-inner');
     if (!msgs) return;
-    msgs.innerHTML = '<div class="welcome-card"><div class="welcome-icon"><img src="/static/ai-avatar.jpg" alt="" class="welcome-avatar"></div><div class="h2">' + getUserName() + '，欢迎使用AI智能管家</div><p class="welcome-desc">购物清单、膳食规划、家电调度、安防巡检 — 一个管家全搞定</p></div>';
+    msgs.innerHTML = '<div class="welcome-card"><div class="welcome-icon"><img src="/static/favicon.png" alt="" class="welcome-avatar"></div><div class="h2">' + getUserName() + '，欢迎使用AI智能管家</div><p class="welcome-desc">购物清单、膳食规划、家电调度、安防巡检 — 一个管家全搞定</p></div>';
 
     // 1.2 秒后管家主动打招呼（固定话术，不调 API，秒出）
     setTimeout(function() {
         var div = document.createElement("div");
         div.className = "msg assistant";
-        div.innerHTML = '<div class="avatar"><img src="/static/ai-avatar.jpg" style="width:36px;height:36px;border-radius:50%;object-fit:cover"></div><div class="bubble"></div>';
+        div.innerHTML = '<div class="avatar"><img src="/static/favicon.png" style="width:36px;height:36px;border-radius:50%;object-fit:cover"></div><div class="bubble"></div>';
         msgs.appendChild(div);
         var bubble = div.querySelector(".bubble");
         scrollDown();
@@ -170,7 +170,7 @@ async function handleRegister(e) {
 
 const AGENTS = {
   default: {
-    name: "家务AI管家", icon: "ai-avatar.jpg",
+    name: "家务AI管家", icon: "favicon.png",
     desc: "购物·膳食·家电·维保·安防·事务 — 一个管家全搞定",
     chipGroups: [
       { label: "饮食料理", chips: ["看看冰箱里有什么","帮我规划一周菜谱","冰箱食材快过期了能做什么","帮我生成购物清单并比价"] },
@@ -193,7 +193,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (AUTH_USER) {
     var inner = document.querySelector('.messages-inner');
     if (inner) {
-      inner.innerHTML = '<div class="welcome-card"><div class="welcome-icon"><img src="/static/ai-avatar.jpg" alt="" class="welcome-avatar"></div><div class="h2">' + getUserName() + '，欢迎使用AI智能管家</div><p class="welcome-desc">购物清单、膳食规划、家电调度、安防巡检 — 一个管家全搞定</p></div>';
+      inner.innerHTML = '<div class="welcome-card"><div class="welcome-icon"><img src="/static/favicon.png" alt="" class="welcome-avatar"></div><div class="h2">' + getUserName() + '，欢迎使用AI智能管家</div><p class="welcome-desc">购物清单、膳食规划、家电调度、安防巡检 — 一个管家全搞定</p></div>';
     }
   }
   renderChips();
@@ -246,7 +246,7 @@ function initWorkflowBtns() {
       var msgs = document.querySelector('.messages-inner');
       var div = document.createElement("div");
       div.className = "msg assistant";
-      div.innerHTML = '<div class="avatar"><img src="/static/ai-avatar.jpg" style="width:36px;height:36px;border-radius:50%;object-fit:cover"></div><div class="bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
+      div.innerHTML = '<div class="avatar"><img src="/static/favicon.png" style="width:36px;height:36px;border-radius:50%;object-fit:cover"></div><div class="bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
       msgs.appendChild(div);
       var streamEl = div.querySelector(".bubble");
       scrollDown();
@@ -522,7 +522,7 @@ async function sendMessage() {
   msgs.innerHTML += '<div class="msg user"><div class="avatar">👤</div><div class="bubble">' + escapeHtml(text) + '</div>';
   var div = document.createElement("div");
   div.className = "msg assistant";
-  div.innerHTML = '<div class="avatar"><img src="/static/ai-avatar.jpg" style="width:36px;height:36px;border-radius:50%;object-fit:cover"></div><div class="bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
+  div.innerHTML = '<div class="avatar"><img src="/static/favicon.png" style="width:36px;height:36px;border-radius:50%;object-fit:cover"></div><div class="bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
   msgs.appendChild(div);
   var streamEl = div.querySelector(".bubble");
   scrollDown();
@@ -1071,7 +1071,7 @@ async function handleImageUpload(event) {
   // 2. 再插入 AI 回复气泡（下方）
   var div = document.createElement('div');
   div.className = 'msg assistant';
-  div.innerHTML = '<div class="avatar"><img src="/static/ai-avatar.jpg" width="36" height="36" style="border-radius:50%;object-fit:cover"></div><div class="bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
+  div.innerHTML = '<div class="avatar"><img src="/static/favicon.png" width="36" height="36" style="border-radius:50%;object-fit:cover"></div><div class="bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
   msgs.appendChild(div);
   var bubble = div.querySelector('.bubble');
   scrollDown();
@@ -1182,7 +1182,7 @@ async function approveConfirmation() {
   var msgs = document.querySelector(".messages-inner");
   var div = document.createElement("div");
   div.className = "msg assistant";
-  div.innerHTML = '<div class="avatar"><img src="/static/ai-avatar.jpg" style="width:36px;height:36px;border-radius:50%;object-fit:cover"></div><div class="bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
+  div.innerHTML = '<div class="avatar"><img src="/static/favicon.png" style="width:36px;height:36px;border-radius:50%;object-fit:cover"></div><div class="bubble"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
   msgs.appendChild(div);
   var streamEl = div.querySelector(".bubble");
   scrollDown();
