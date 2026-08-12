@@ -1,6 +1,7 @@
 """
 认证路由 v5.2 — JWT 注册/登录/刷新 + 用户信息
 """
+import os
 import uuid
 import bcrypt
 from datetime import datetime, timedelta
@@ -112,13 +113,15 @@ def _generate_captcha_image(text: str) -> str:
         x2, y2 = random.randint(w * 2 // 3, w), random.randint(0, h)
         draw.line((x1, y1, x2, y2), fill=(random.randint(180, 220), random.randint(180, 220), random.randint(180, 220)), width=2)
 
-    # 按顺序尝试常见字体路径（Docker Debian / Windows / 系统默认）
+    # 按顺序尝试字体路径：项目内置字体优先（保证任何环境一致）
+    _assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "assets")
     _font_paths = [
+        os.path.join(_assets_dir, "DejaVuSans-Bold.ttf"),          # 项目内置（首选）
+        os.path.join(_assets_dir, "arial.ttf"),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",   # Docker (Debian)
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "C:\\Windows\\Fonts\\arialbd.ttf",                         # Windows 粗体
         "C:\\Windows\\Fonts\\arial.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
     ]
     font = None
     for path in _font_paths:
